@@ -1,0 +1,9 @@
+{
+  "description": "Document grifs and approval/marking stamps — non-sensitive, must not be tokenized. Words like \"УТВЕРЖДАЮ\" or \"СЕКРЕТНО\" head an approval or marking block in formal documents; Natasha NER mistags them as entities. Matched as word-by-word lemma keys, so declensions are covered. To extend: add another grif / stamp word.",
+  "items": [
+    "УТВЕРЖДАЮ", "СОГЛАСОВАНО", "ОЗНАКОМЛЕН", "ПРИКАЗЫВАЮ",
+    "ПОСТАНОВЛЯЮ", "УТВЕРЖДЕНО", "ПРИНЯТО", "ОТКЛОНЕНО", "ДСП",
+    "СЕКРЕТНО", "КОНФИДЕНЦИАЛЬНО", "ЧЕРНОВИК", "ОБРАЗЕЦ", "КОПИЯ",
+    "ДУБЛИКАТ", "ОРИГИНАЛ"
+  ]
+}

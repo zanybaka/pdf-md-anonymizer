@@ -1,0 +1,12 @@
+{
+  "name": "company registration block",
+  "text": "Организация: ООО «Рога и Копыта».\nИНН 7810001238\nОГРН 1027000123457\nКПП 771501001\nБИК 044599001\nРасчётный счёт 40702810900000099999\n",
+  "expected": [
+    {"category": "ORG", "value": "ООО «Рога и Копыта»"},
+    {"category": "INN", "value": "7810001238"},
+    {"category": "OGRN", "value": "1027000123457"},
+    {"category": "KPP", "value": "771501001"},
+    {"category": "BIK", "value": "044599001"},
+    {"category": "ACCOUNT", "value": "40702810900000099999"}
+  ]
+}

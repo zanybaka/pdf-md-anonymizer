@@ -1,0 +1,12 @@
+{
+  "description": "Colloquial / conversational filler words — interjections, discourse markers, slang. Non-sensitive. On speech-to-text transcripts Natasha NER mistags capitalized fillers (sentence-initial \"Угу\", \"Точно\", \"Короче\") as PERSON or ORG; unlike the POS filter, an explicit stoplist also catches the ones the morph tagger labels PROPN. Matched as word-by-word lemma keys, so only a whole single-word span is dropped (a multi-word real entity containing such a word is unaffected). Does not — and cannot — cover ASR garbage (non-existent mis-transcribed words). To extend: add another conversational filler word. NOTE: does not list bare \"да\"/\"нет\" — too short to ever be a meaningful NER span and pointless to filter.",
+  "items": [
+    "Угу", "Ага", "Ой", "Ого", "Опа", "Упс", "Хм", "Эх", "Ух", "Ауч",
+    "Ну", "Вот", "Так", "Типа", "Короче", "Кстати", "Вообще",
+    "Получается", "Допустим", "Значит", "Собственно", "Дескать", "Мол",
+    "Прям", "Прямо", "Окей", "Ладно", "Точно", "Конечно", "Ясно",
+    "Понятно", "Именно", "Верно", "Слушай", "Смотри", "Погоди",
+    "Подожди", "Давай", "Топ", "Норм", "Класс", "Супер", "Жесть",
+    "Кайф", "Ребята", "Народ", "Коллеги"
+  ]
+}

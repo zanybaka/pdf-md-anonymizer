@@ -1,0 +1,24 @@
+First Launch on macOS
+=====================
+
+macOS blocks apps from unidentified developers by default.
+The easiest fix is one Terminal command:
+
+    xattr -cr "/Applications/PDF-MD Anonymizer.app"
+
+Then double-click the app — it will open normally.
+
+
+Without Terminal (macOS Ventura / Sonoma / Sequoia):
+
+1. Double-click the app — macOS shows a "cannot be opened" alert. Click Done.
+2. Open System Settings → Privacy & Security.
+3. Scroll down to the Security section — you will see
+   "PDF-MD Anonymizer was blocked". Click "Open Anyway".
+4. Enter your password if prompted.
+5. Double-click the app again — click "Open" in the final dialog.
+
+You only need to do this once.
+
+--
+https://github.com/zanybaka/pdf-md-anonymizer

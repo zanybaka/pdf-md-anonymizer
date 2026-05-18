@@ -1,0 +1,6 @@
+{
+  "description": "Résumé field-label words Natasha NER mistags as PERSON. Document-type-specific: these head fields in a résumé (CV). \"Желательное\" heads \"Желательное время в пути\" / \"Желательное место работы\"; the NER POS filter cannot drop it because the morph tagger tags it PROPN, not NOUN. Matched as word-by-word lemma keys. To extend: add another résumé field label.",
+  "items": [
+    "Желательное"
+  ]
+}

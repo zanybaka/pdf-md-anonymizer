@@ -1,0 +1,92 @@
+{
+  "description": "Curated stoplist of developer tools, technologies, languages, frameworks, and common engineering-practice terms. Natasha (a Russian NER model) tags capitalized Latin tool/technology names as ORG (occasionally PERSON); these are not PII. Real company names in Latin script must stay detected, so this is an explicit allow-through-by-omission list, not a blanket Latin-script drop — and well-known standalone company names (Oracle, Apple, Microsoft, Amazon, cloud providers, …) are deliberately NOT listed, because they may be real employers. Matched on a casefolded, whitespace-collapsed value (whole span value, so a multi-word real company is not dropped by a one-word entry). Necessarily non-exhaustive. To extend: add the tool/technology name to the group that best fits its kind (the loader flattens all groups); do not add names that are primarily a company.",
+  "groups": {
+    "languages": [
+      "Python", "JavaScript", "TypeScript", "Java", "Kotlin", "Kotlyn",
+      "Golang", "Go", "Rust", "C", "C++", "C#", "Scala", "Swift",
+      "Objective-C", "Ruby", "PHP", "Perl", "Lua", "Haskell", "Elixir",
+      "Erlang", "Clojure", "F#", "Dart", "Groovy", "R", "MATLAB", "Julia",
+      "COBOL", "Fortran", "Assembly", "Bash", "Shell", "PowerShell", "SQL",
+      "PL/SQL", "T-SQL", "Solidity", "Zig", "Nim", "OCaml", "Delphi",
+      "Visual Basic", "ABAP", "Apex", "WASM", "WebAssembly", "WebWorkers"
+    ],
+    "markup_formats": [
+      "HTML", "CSS", "SCSS", "SASS", "Less", "XML", "JSON", "YAML", "TOML",
+      "Markdown", "CSV", "Protobuf", "Avro"
+    ],
+    "build_ci_cd_vcs": [
+      "Docker", "Docker Compose", "Podman", "Jenkins", "Gitlab CI",
+      "Github Actions", "Teamcity", "Bitbucket", "Circle CI", "Travis CI",
+      "Drone CI", "Bamboo", "ArgoCD", "Git", "SVN", "Subversion", "Mercurial",
+      "TFS", "Webpack", "Vite", "Rollup", "Parcel", "esbuild", "Turborepo",
+      "Nx", "Lerna", "Gradle", "Maven", "sbt", "Bazel", "CMake", "Yarn",
+      "npm", "pnpm", "Bun", "NuGet", "pip", "Poetry", "Helm", "Packer",
+      "Vagrant"
+    ],
+    "ides": [
+      "MS Visual Studio", "Visual Studio", "VS Code", "IntelliJ IDEA",
+      "PyCharm", "WebStorm", "GoLand", "PhpStorm", "RubyMine", "CLion",
+      "Rider", "DataGrip", "Android Studio", "Xcode", "Vim", "Neovim",
+      "Emacs", "Sublime Text", "Eclipse", "NetBeans", "Notepad++", "Zed"
+    ],
+    "testing_quality": [
+      "Jest", "Vitest", "Playwright", "Cypress", "Selenium", "Puppeteer",
+      "Mocha", "Jasmine", "Karma", "Allure", "Pytest", "JUnit", "TestNG",
+      "NUnit", "xUnit", "PHPUnit", "RSpec", "Testing Library", "Sonarqube",
+      "JMeter", "Gatling", "Locust", "k6", "ESLint", "Prettier", "Pylint",
+      "Flake8", "Black", "Ruff", "mypy", "Stylelint", "Checkstyle"
+    ],
+    "frameworks_libraries": [
+      "React", "Angular", "Vue", "Svelte", "Preact", "SolidJS", "Ember",
+      "Next.js", "Nuxt", "Gatsby", "Remix", "Astro", "Redux", "MobX",
+      "Zustand", "Pinia", "Vuex", "RxJS", "jQuery", "Bootstrap", "Tailwind",
+      "Tailwind CSS", "Material UI", "Ant Design", "Chakra UI", "Apollo",
+      "Three.js", "D3.js", "Chart.js", "Electron", "Tauri", "Flutter",
+      "React Native", "Ionic", "Qt", "Django", "Flask", "FastAPI", "Tornado",
+      "Sanic", "aiohttp", "SQLAlchemy", "Pydantic", "Celery", "Spring",
+      "Spring Boot", "Hibernate", "Ktor", "Express", "NestJS", "Laravel",
+      "Symfony", "Rails", "Ruby on Rails", "Sinatra", "ASP.NET", ".NET",
+      "Gin", "Echo", "Fiber", "Actix"
+    ],
+    "data_ml": [
+      "NumPy", "Pandas", "SciPy", "scikit-learn", "TensorFlow", "PyTorch",
+      "Keras", "OpenCV", "Matplotlib", "Seaborn", "Jupyter", "Spark",
+      "Hadoop", "Flink", "Airflow"
+    ],
+    "databases": [
+      "PostgreSQL", "MySQL", "MariaDB", "SQLite", "MongoDB", "Redis",
+      "Memcached", "Cassandra", "ScyllaDB", "Couchbase", "Neo4j",
+      "ClickHouse", "Elasticsearch", "OpenSearch"
+    ],
+    "infra_observability": [
+      "Kubernetes", "OpenShift", "Rancher", "Nomad", "Consul", "Vault",
+      "etcd", "Terraform", "Ansible", "Nginx", "Apache", "Tomcat", "HAProxy",
+      "Traefik", "Envoy", "Istio", "Kafka", "RabbitMQ", "ActiveMQ", "NATS",
+      "Grafana", "Prometheus", "Kibana", "Logstash", "Loki", "Jaeger",
+      "Zipkin", "Zabbix", "Nagios"
+    ],
+    "os_platforms": [
+      "Linux", "Ubuntu", "Debian", "CentOS", "Fedora", "RHEL", "Alpine",
+      "Windows", "macOS", "Android", "iOS", "Unix", "FreeBSD"
+    ],
+    "protocols_web": [
+      "HTTP", "HTTPS", "REST", "RESTful", "GraphQL", "gRPC", "WebSocket",
+      "TCP", "UDP", "OAuth", "JWT", "SAML", "LDAP", "SOAP", "MQTT", "AMQP",
+      "SSH", "FTP", "SMTP", "DNS", "SSL", "TLS", "CORS"
+    ],
+    "api_tools": [
+      "Postman", "Insomnia", "Swagger", "OpenAPI"
+    ],
+    "engineering_practices": [
+      "Code Review", "Mentoring", "Monorepos", "Monorepo", "Migration Guides",
+      "Production"
+    ],
+    "methodologies": [
+      "Kanban", "Scrum", "Agile", "Waterfall", "Lean", "SAFe", "Scrumban",
+      "Sprint", "Backlog", "Standup", "Daily", "Retro", "Retrospective",
+      "Grooming", "Refinement", "Planning", "Epic", "Story", "User Story",
+      "Story Points", "Velocity", "Burndown", "Roadmap", "Milestone",
+      "Definition of Done", "WIP", "Expedite", "Jira", "Trello"
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Résumé / document section headers Natasha NER mistags as ORG or PERSON. Document-type-specific: these are headings found in résumés (CVs). Not PII. Matched as word-by-word lemma keys, so declensions are covered. To extend: add another résumé section heading.",
+  "items": [
+    "Образование", "Навыки", "Специализации", "Опыт работы",
+    "Дополнительная информация", "Желаемая должность", "Контакты",
+    "О себе", "Обо мне", "Личные качества", "Достижения",
+    "Профессиональные достижения", "Сертификаты", "Курсы", "Проекты",
+    "Рекомендации", "Иностранные языки", "Хобби", "Интересы",
+    "Карьерная цель", "Профессиональные навыки", "Ключевые навыки"
+  ]
+}

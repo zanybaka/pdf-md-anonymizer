@@ -1,0 +1,9 @@
+{
+  "description": "Common URL top-level domains for the scheme-less bare-domain URL rule. A bare \"unicum.ru\" carries no scheme, so the URL rule anchors it on a known TLD. \"io\" and \"ai\" are intentionally omitted — they collide with dev-tool names like \"Socket.io\". Not exhaustive; to extend, add another TLD (lowercase, no dot), avoiding short collision-prone ones.",
+  "items": [
+    "ru", "su", "com", "org", "net", "info", "biz", "edu", "gov", "pro",
+    "name", "co", "uk", "de", "fr", "it", "es", "kz", "by", "ua", "us",
+    "eu", "cn", "jp", "in", "tr", "kr", "tech", "dev", "app", "online",
+    "site", "store", "shop", "cloud", "xyz"
+  ]
+}

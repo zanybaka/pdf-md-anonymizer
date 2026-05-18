@@ -1,0 +1,7 @@
+{
+  "description": "Casefolded stems that mark a skills / technologies / competencies section. Document-type-specific: these identify a skills block in a résumé (CV). Matched as a substring of a markdown header's text, so declensions and multi-word headers (\"Ключевые навыки\", \"Стек технологий\") are covered. A skills block lists tools, not employers, so ORG/LOC NER recall is suppressed inside such a section (see ADR-0007). To extend: add another stem (casefolded, no whitespace) that names a skills/technologies section heading.",
+  "items": [
+    "навык", "технолог", "компетенц", "инструмент", "стек",
+    "skill", "technolog", "tool", "stack", "competenc"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "contact card",
+  "text": "Контактное лицо: Иван Петров.\nEmail: ivan@roga-kopyta.test\nТелефон: +7 (900) 123-45-67\nСайт: https://roga-kopyta.example\n",
+  "expected": [
+    {"category": "PERSON", "value": "Иван Петров"},
+    {"category": "EMAIL", "value": "ivan@roga-kopyta.test"},
+    {"category": "PHONE", "value": "+7 (900) 123-45-67"},
+    {"category": "URL", "value": "https://roga-kopyta.example"}
+  ]
+}

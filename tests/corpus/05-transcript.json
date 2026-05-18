@@ -1,0 +1,7 @@
+{
+  "name": "noisy meeting transcript",
+  "text": "Совещание провёл Иван Петров.\nВокруг шумел лес, Вокруг было тихо.\n",
+  "expected": [
+    {"category": "PERSON", "value": "Иван Петров"}
+  ]
+}

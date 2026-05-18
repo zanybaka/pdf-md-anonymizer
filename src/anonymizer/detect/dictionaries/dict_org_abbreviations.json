@@ -1,0 +1,8 @@
+{
+  "description": "Abbreviated legal-entity forms. Used by the regex ORG rule, as bare-legal-form stoplist entries in NER, and to keep these abbreviations uppercase during NER case normalization. Longer abbreviations are listed before shorter ones sharing a tail. Collision-prone abbreviations (ПК — also 'персональный компьютер', ГК — also 'Гражданский кодекс') are deliberately omitted. To extend: add another legal-form abbreviation; keep its full spelling in dict_org_forms.json.",
+  "items": [
+    "ФГУП", "ФГБУ", "ГУП", "МУП", "ГБУ", "МБУ",
+    "ООО", "ПАО", "ЗАО", "ОАО", "ИЧП", "ТОО", "НПО", "НКО", "АНО",
+    "ТСЖ", "ЖСК", "СНТ", "КФХ", "АО", "ОП", "ИП"
+  ]
+}

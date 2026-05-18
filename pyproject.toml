@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pdf-md-anonymizer"
+version = "0.1.0"
+description = "Anonymize PDF/Markdown documents by replacing private data with reversible tokens"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["natasha"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+# UI deps are kept out of the core runtime so `pip install pdf-md-anonymizer`
+# (the `anon` CLI) never pulls in Toga.
+ui = ["toga"]
+# PDF conversion backend. Opt-in because the docling backend pulls heavy ML
+# dependencies (torch + models); the core install stays light. Installed from
+# git — the project is never published to PyPI, so PyPI's ban on direct-URL
+# dependencies does not apply. Mirrored under [tool.briefcase] below because
+# Briefcase does not read PEP 621 optional-dependencies. The distribution is
+# named `pdf-to-markdown`; `pdf2md` is the CLI command it installs. The
+# `backend/docling` branch is the docling-backed build (the `main` branch is a
+# different, lighter backend).
+pdf = ["pdf-to-markdown @ git+https://github.com/zanybaka/pdf-to-markdown@backend/docling"]
+
+[project.scripts]
+anon = "anonymizer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anonymizer"]
+
+# The `[pdf]` extra uses a direct git reference for `pdf2md`. Hatchling rejects
+# direct references by default to guard against publishing them to PyPI; this
+# project is installed only from git and never published, so it is allowed.
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+# --- Briefcase desktop packaging (UI-001) ---------------------------------
+[tool.briefcase]
+project_name = "PDF/MD Anonymizer"
+bundle = "io.github.zanybaka"
+version = "0.1.0"
+url = "https://github.com/zanybaka/pdf-md-anonymizer"
+license = "MIT"
+author = "ZanyBaka"
+author_email = "28846209+zanybaka@users.noreply.github.com"
+
+# The Briefcase app key must match the app's own package: Briefcase derives
+# the package name from it (hyphens → underscores), so `anonymizer-ui` →
+# `anonymizer_ui`, which is the UI package in `sources`. The bundled `.app` is
+# named from `formal_name` below, not from this key.
+[tool.briefcase.app.anonymizer-ui]
+formal_name = "PDF-MD Anonymizer"
+description = "Desktop UI for the PDF/MD anonymizer"
+long_description = "Anonymize PDF and Markdown documents by replacing private data with reversible tokens."
+sources = ["src/anonymizer", "src/anonymizer_ui"]
+# The .app bundles only the light core (natasha). The docling-backed pdf2md is
+# deliberately NOT bundled (ADR-0008): its native deps docling-parse /
+# deepsearch-glm publish no wheels for Briefcase's macOS-11.0 / cp312 /
+# --only-binary install target, and bundling docling + torch would bloat the
+# distributable. PDF support is installed on first use instead — see UI-002.
+requires = [
+    "natasha",
+    "setuptools",  # pymorphy2 imports pkg_resources at runtime
+]
+
+[tool.briefcase.app.anonymizer-ui.macOS]
+universal_build = false
+requires = ["toga-cocoa", "std-nslog"]
+info_plist = {NSHumanReadableCopyright = "© 2026 ZanyBaka · github.com/zanybaka/pdf-md-anonymizer"}

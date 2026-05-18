@@ -1,0 +1,7 @@
+{
+  "description": "Generic common nouns Natasha NER mistags as ORG — name no specific entity. Not PII: \"Интернет\", \"Сервер\" and the like are common nouns, not organizations. Matched as word-by-word lemma keys, so declensions are covered, and only a bare single-word span is dropped (a real org like \"Почта России\" reduces to a different key and stays detected). To extend: add another generic noun that NER mislabels as an entity.",
+  "items": [
+    "Интернет", "Банк", "Вэб", "Веб", "Сайт", "Сервер", "Сеть",
+    "Облако", "Софт", "Контент", "Почта"
+  ]
+}
