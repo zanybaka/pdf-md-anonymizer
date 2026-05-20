@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from anonymizer.api import Options, anonymize
-from anonymizer.batch import process_files, read_input
+from anonymizer.batch import FileStatus, OutputPolicy, Stage, process_files, read_input
 from anonymizer.mapping import dumps_map, load_map, restore
 
 
@@ -98,13 +98,13 @@ def _expand_inputs(patterns: list[str]) -> list[str]:
     return expanded
 
 
-_STAGE_LABELS = {"converting": "converting PDF…", "detecting": "detecting…"}
+_STAGE_LABELS = {Stage.CONVERTING: "converting PDF…", Stage.DETECTING: "detecting…"}
 
 
 def _run_single(inp: str, args: argparse.Namespace, options: Options) -> int:
     is_stdin = inp == "-"
 
-    def on_stage(stage: str) -> None:
+    def on_stage(stage: Stage) -> None:
         print(f"anon: {_STAGE_LABELS.get(stage, stage)}", file=sys.stderr)
 
     try:
@@ -116,18 +116,17 @@ def _run_single(inp: str, args: argparse.Namespace, options: Options) -> int:
         print(f"anon: {exc}", file=sys.stderr)
         return 1
 
-    on_stage("detecting")
+    on_stage(Stage.DETECTING)
     result = anonymize(text, options)
 
-    # Output: explicit -o; else stdout for stdin; else <stem>.anon.md next to
-    # the input file.
+    # Output: explicit -o; else stdout for stdin; else next to input file.
     if args.output:
         out_path: Path | None = Path(args.output)
     elif is_stdin:
         out_path = None
     else:
         src = Path(inp)
-        out_path = src.with_name(f"{src.stem}.anon.md")
+        out_path = OutputPolicy.next_to_input().resolve(src) / f"{src.stem}.anon.md"
 
     # Map: explicit --map only; no automatic side-write.
     map_path: Path | None = Path(args.map) if args.map else None
@@ -153,15 +152,19 @@ def _run_single(inp: str, args: argparse.Namespace, options: Options) -> int:
 
 
 def _run_batch(inputs: list[str], args: argparse.Namespace, options: Options) -> int:
-    output_dir = Path(args.output) if args.output else Path(".")
-    map_dir: Path | None = Path(args.map) if args.map else None
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if map_dir is not None:
-        map_dir.mkdir(parents=True, exist_ok=True)
+    if args.output:
+        output_policy = OutputPolicy.into_directory(args.output)
+        Path(args.output).mkdir(parents=True, exist_ok=True)
+    else:
+        output_policy = OutputPolicy.next_to_input()
+    map_policy: OutputPolicy | None = None
+    if args.map:
+        map_policy = OutputPolicy.into_directory(args.map)
+        Path(args.map).mkdir(parents=True, exist_ok=True)
 
     total = len(inputs)
 
-    def on_stage(index: int, count: int, path: Path, stage: str) -> None:
+    def on_stage(index: int, count: int, path: Path, stage: Stage) -> None:
         label = _STAGE_LABELS.get(stage, stage)
         print(f"[{index}/{count}] {path.name} — {label}", file=sys.stderr)
 
@@ -169,21 +172,21 @@ def _run_batch(inputs: list[str], args: argparse.Namespace, options: Options) ->
     for i, result in enumerate(
         process_files(
             inputs,
-            output_dir=output_dir,
-            map_dir=map_dir,
+            output_policy=output_policy,
+            map_policy=map_policy,
             options=options,
             pdf2md_cmd=args.pdf2md_cmd,
             on_stage=on_stage,
         ),
         start=1,
     ):
-        if result.status == "failed":
+        if result.status == FileStatus.FAILED:
             failed += 1
             print(
                 f"[{i}/{total}] FAILED {result.input_path}: {result.error}",
                 file=sys.stderr,
             )
-        elif result.status == "cancelled":
+        elif result.status == FileStatus.CANCELLED:
             print(f"[{i}/{total}] cancelled {result.input_path}", file=sys.stderr)
         else:
             print(
@@ -232,17 +235,32 @@ def _run_restore(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    argv = sys.argv[1:]
-    # Allow `anon INPUT ...` without the explicit `anonymize` subcommand.
-    if argv and argv[0] not in ("anonymize", "restore", "-h", "--help"):
-        argv = ["anonymize", *argv]
-
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    argv = sys.argv[1:]
 
-    if args.command is None:
-        parser.print_help(sys.stderr)
-        sys.exit(2)
+    # Derive known subcommand names from the parser so that adding a new
+    # sub.add_parser(...) call automatically extends the routing — no
+    # hard-coded inclusion list to update.
+    _sub = next(
+        (a for a in parser._actions if hasattr(a, "choices") and isinstance(a.choices, dict)),
+        None,
+    )
+    known_subcmds = (set(_sub.choices) | {"-h", "--help"}) if _sub else {"-h", "--help"}
+
+    if not argv or argv[0] not in known_subcmds:
+        # No subcommand given — parse directly as the default `anonymize` command.
+        anon_parser = argparse.ArgumentParser(
+            prog="anon",
+            description=parser.description,
+            epilog=parser.epilog,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        _add_anonymize_args(anon_parser)
+        args = anon_parser.parse_args(argv)
+        args.command = None
+    else:
+        args = parser.parse_args(argv)
+
     if args.command == "restore":
         sys.exit(_run_restore(args))
     sys.exit(_run_anonymize(args))

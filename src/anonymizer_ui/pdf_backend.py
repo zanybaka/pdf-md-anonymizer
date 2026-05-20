@@ -15,7 +15,7 @@ Inside a Briefcase ``.app``, ``sys.executable`` is the Cocoa launcher and
 cannot be used as a Python interpreter.  ``pdf-to-markdown`` is built from
 source (no PyPI wheel), so pip needs a real Python for build isolation.
 :func:`_find_build_python` locates a system ``python3`` outside the bundle and
-:func:`_pip_install` runs pip as an **external subprocess** using that
+:class:`SubprocessPipRunner` runs pip as an **external subprocess** using that
 interpreter — the entire pip session (including build isolation) runs in one
 consistent Python version with no conflicts.
 
@@ -31,8 +31,9 @@ from __future__ import annotations
 import contextlib
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import Protocol, runtime_checkable
 
 # Same git reference as [project.optional-dependencies].pdf in pyproject.toml.
 _PDF_BACKEND_URL = (
@@ -62,6 +63,24 @@ def pdf2md_path() -> Path:
 def is_installed() -> bool:
     """Return ``True`` if the PDF backend is installed and ``pdf2md`` is present."""
     return pdf2md_path().is_file()
+
+
+def can_install() -> bool:
+    """Return ``True`` when a suitable Python is available to run pip.
+
+    Inside a Briefcase ``.app`` a system Python ≥ 3.11 is required.
+    Outside the bundle (dev venv, CLI install) ``sys.executable`` is usable
+    directly, so pip is always available.
+    """
+    return _find_build_python() is not None or ".app/Contents/MacOS/" not in sys.executable
+
+
+def needs_setuptools_repair() -> bool:
+    """Return ``True`` when the backend is installed but missing setuptools.
+
+    Called once at startup to decide whether to run the repair thread.
+    """
+    return is_installed() and not _has_setuptools()
 
 
 def installed_version() -> str | None:
@@ -96,11 +115,7 @@ def ensure_setuptools() -> None:
         return
     prefix = backend_dir()
     pip_args = ["install", "--prefix", str(prefix), "--no-cache-dir", "setuptools"]
-    build_python = _find_build_python()
-    if build_python:
-        _run_pip_subprocess(build_python, pip_args, on_line=None)
-    else:
-        _run_pip(pip_args, on_line=None)
+    _make_runner().run(pip_args, on_line=None)
 
 
 # ---------------------------------------------------------------------------
@@ -188,53 +203,137 @@ class _LineWriter:
         raise OSError("_LineWriter has no fileno")
 
 
-def _ssl_cert_args() -> list[str]:
-    """Return ``--cert <path>`` args so pip can verify PyPI's SSL certificate.
-
-    The Python.framework inside a Briefcase ``.app`` does not automatically
-    use the macOS system CA store.  Passing the cert bundle explicitly fixes
-    SSL verification failures when pip fetches packages from PyPI.
-    """
-    # macOS system CA bundle — present on all macOS installs with curl / Xcode CLT
+def resolve_cert() -> Path | None:
+    """Return a CA bundle path for pip SSL verification, or ``None``."""
     system_cert = Path("/etc/ssl/cert.pem")
     if system_cert.exists():
-        return ["--cert", str(system_cert)]
-    # certifi as a fallback (may be installed as a dep of something in app_packages)
+        return system_cert
     try:
         import certifi  # noqa: PLC0415
-        return ["--cert", certifi.where()]
+        return Path(certifi.where())
     except ImportError:
-        pass
-    return []
+        return None
 
 
-def _run_pip(args: list[str], on_line: Callable[[str], None] | None) -> None:
-    """Run pip in-process with the given *args*, forwarding output to *on_line*.
+def _ssl_cert_args() -> list[str]:
+    cert = resolve_cert()
+    return ["--cert", str(cert)] if cert else []
 
-    Loads pip from the ``ensurepip`` bundled wheel so no external Python
-    interpreter is required for the pip tool itself.
-    Raises ``RuntimeError`` on a non-zero exit code.
-    """
-    pip_wheel = _find_pip_wheel()
-    if pip_wheel not in sys.path:
-        sys.path.insert(0, pip_wheel)
 
-    from pip._internal.cli.main import main as _pip_main  # noqa: PLC0415
+# ---------------------------------------------------------------------------
+# PipRunner protocol and implementations
+# ---------------------------------------------------------------------------
 
-    full_args = args + _ssl_cert_args()
+@runtime_checkable
+class PipRunner(Protocol):
+    def run(
+        self, args: list[str], on_line: Callable[[str], None] | None
+    ) -> None: ...
 
-    if on_line:
-        writer = _LineWriter(on_line)
-        with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+
+class InProcessPipRunner:
+    """Runs pip in-process using the ensurepip bundled wheel."""
+
+    def __init__(self) -> None:
+        self._path_patched = False
+
+    def run(
+        self, args: list[str], on_line: Callable[[str], None] | None = None
+    ) -> None:
+        if not self._path_patched:
+            pip_wheel = _find_pip_wheel()
+            if pip_wheel not in sys.path:
+                sys.path.insert(0, pip_wheel)
+            self._path_patched = True
+
+        from pip._internal.cli.main import main as _pip_main  # noqa: PLC0415
+
+        full_args = args + _ssl_cert_args()
+        if on_line:
+            writer = _LineWriter(on_line)
+            with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+                exit_code = _pip_main(full_args)
+            writer.flush()
+        else:
             exit_code = _pip_main(full_args)
-        writer.flush()
-    else:
-        exit_code = _pip_main(full_args)
+        if exit_code != 0:
+            raise RuntimeError(f"pip exited with code {exit_code}")
 
-    if exit_code != 0:
+
+class SubprocessPipRunner:
+    """Runs pip as an external subprocess via a given Python interpreter."""
+
+    def __init__(self, python_path: str) -> None:
+        self._python = python_path
+
+    def run(
+        self, args: list[str], on_line: Callable[[str], None] | None = None
+    ) -> None:
+        import subprocess  # noqa: PLC0415
+
+        cmd = [self._python, "-m", "pip"] + args + _ssl_cert_args()
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            )
+        except OSError as exc:
+            raise RuntimeError(f"failed to run pip: {exc}") from exc
+        if proc.stdout:
+            for line in proc.stdout:
+                if on_line:
+                    on_line(line.rstrip())
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(f"pip exited with code {proc.returncode}")
+
+
+def _make_runner() -> InProcessPipRunner | SubprocessPipRunner:
+    """Return the appropriate pip runner for this environment."""
+    build_python = _find_build_python()
+    if build_python is None and ".app/Contents/MacOS/" in sys.executable:
         raise RuntimeError(
-            f"pip exited with code {exit_code}"
+            "No Python 3 interpreter found outside the app bundle. "
+            "Install Python via Homebrew (brew install python3) or https://python.org."
         )
+    if build_python:
+        return SubprocessPipRunner(build_python)
+    return InProcessPipRunner()
+
+
+# ---------------------------------------------------------------------------
+# Backend-specific install / update helpers
+# ---------------------------------------------------------------------------
+
+def install_backend(
+    runner: PipRunner, on_line: Callable[[str], None] | None = None
+) -> None:
+    """Install the pdf-to-markdown backend using *runner*."""
+    prefix = backend_dir()
+    prefix.mkdir(parents=True, exist_ok=True)
+    if on_line:
+        on_line(f"Installing {_PACKAGE_NAME} (this may take a few minutes)…")
+    pip_args = [
+        "install", "--prefix", str(prefix), "--no-cache-dir",
+        "setuptools", _PDF_BACKEND_URL,
+    ]
+    runner.run(pip_args, on_line)
+    _patch_pdf2md_script(prefix)
+
+
+def update_backend(
+    runner: PipRunner, on_line: Callable[[str], None] | None = None
+) -> None:
+    """Update the pdf-to-markdown backend using *runner*."""
+    prefix = backend_dir()
+    prefix.mkdir(parents=True, exist_ok=True)
+    if on_line:
+        on_line(f"Updating {_PACKAGE_NAME} (this may take a few minutes)…")
+    pip_args = [
+        "install", "--prefix", str(prefix), "--no-cache-dir", "--upgrade",
+        "setuptools", _PDF_BACKEND_URL,
+    ]
+    runner.run(pip_args, on_line)
+    _patch_pdf2md_script(prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -242,82 +341,13 @@ def _run_pip(args: list[str], on_line: Callable[[str], None] | None) -> None:
 # ---------------------------------------------------------------------------
 
 def install(on_line: Callable[[str], None] | None = None) -> None:
-    """Install the pdf-to-markdown backend from git.
-
-    ``on_line`` receives each line of output as it arrives.
-    Raises ``RuntimeError`` on failure.
-    """
-    _pip_install(upgrade=False, on_line=on_line)
+    """Install the pdf-to-markdown backend from git."""
+    install_backend(_make_runner(), on_line)
 
 
 def update(on_line: Callable[[str], None] | None = None) -> None:
-    """Update the PDF backend to the latest revision from git.
-
-    ``on_line`` receives each line of output as it arrives.
-    Raises ``RuntimeError`` on failure.
-    """
-    _pip_install(upgrade=True, on_line=on_line)
-
-
-def _pip_install(*, upgrade: bool, on_line: Callable[[str], None] | None) -> None:
-    """Shared implementation for :func:`install` and :func:`update`.
-
-    Inside a Briefcase ``.app``: runs pip as an external subprocess via the
-    system Python found by :func:`_find_build_python`.  This keeps the entire
-    pip session — including build isolation — in a single, consistent Python
-    version and avoids the Cocoa launcher issue.
-
-    In a dev venv: calls pip in-process (faster, no external interpreter needed).
-    """
-    build_python = _find_build_python()
-    if build_python is None and ".app/Contents/MacOS/" in sys.executable:
-        raise RuntimeError(
-            "No Python 3 interpreter found outside the app bundle. "
-            "Install Python via Homebrew (brew install python3) or https://python.org."
-        )
-
-    prefix = backend_dir()
-    prefix.mkdir(parents=True, exist_ok=True)
-
-    if on_line:
-        verb = "Updating" if upgrade else "Installing"
-        on_line(f"{verb} {_PACKAGE_NAME} (this may take a few minutes)…")
-
-    pip_args = ["install", "--prefix", str(prefix), "--no-cache-dir"]
-    if upgrade:
-        pip_args.append("--upgrade")
-    # setuptools provides pkg_resources, required by parts of the docling stack
-    pip_args += ["setuptools", _PDF_BACKEND_URL]
-
-    if build_python:
-        _run_pip_subprocess(build_python, pip_args, on_line)
-    else:
-        _run_pip(pip_args, on_line)
-
-    _patch_pdf2md_script(prefix)
-
-
-def _run_pip_subprocess(
-    python: str, pip_args: list[str], on_line: Callable[[str], None] | None
-) -> None:
-    """Run ``python -m pip <pip_args>`` as a subprocess, streaming output."""
-    import subprocess
-
-    cmd = [python, "-m", "pip"] + pip_args + _ssl_cert_args()
-    try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-        )
-    except OSError as exc:
-        raise RuntimeError(f"failed to run pip: {exc}") from exc
-
-    if proc.stdout:
-        for line in proc.stdout:
-            if on_line:
-                on_line(line.rstrip())
-    proc.wait()
-    if proc.returncode != 0:
-        raise RuntimeError(f"pip exited with code {proc.returncode}")
+    """Update the PDF backend to the latest revision from git."""
+    update_backend(_make_runner(), on_line)
 
 
 def _find_site_packages(prefix: Path) -> Path | None:

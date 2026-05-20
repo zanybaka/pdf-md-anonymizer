@@ -4,13 +4,34 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from enum import auto
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Union
+from typing import Callable, Iterable, Iterator
 
-# Per-file stage callback: receives a stage name ("converting", "detecting").
-StageCallback = Callable[[str], None]
+try:
+    from enum import StrEnum
+except ImportError:
+    from enum import Enum
+
+    class StrEnum(str, Enum):  # type: ignore[no-redef]
+        pass
+
+
+class FileStatus(StrEnum):
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class Stage(StrEnum):
+    CONVERTING = "converting"
+    DETECTING = "detecting"
+
+
+# Per-file stage callback: receives a Stage value.
+StageCallback = Callable[[Stage], None]
 # Batch stage callback: receives (index, total, input_path, stage).
-BatchStageCallback = Callable[[int, int, Path, str], None]
+BatchStageCallback = Callable[[int, int, Path, Stage], None]
 
 from anonymizer.api import Options, anonymize
 from anonymizer.convert import pdf_to_markdown
@@ -36,7 +57,7 @@ class FileResult:
     """Outcome of processing one input file."""
 
     input_path: Path
-    status: str  # "done" | "failed" | "cancelled"
+    status: FileStatus
     output_path: Path | None = None
     map_path: Path | None = None
     error: str | None = None
@@ -52,7 +73,7 @@ def read_input(
     path = Path(path)
     if path.suffix.lower() == ".pdf":
         if on_stage is not None:
-            on_stage("converting")
+            on_stage(Stage.CONVERTING)
         return pdf_to_markdown(path, pdf2md_cmd)
     return path.read_text(encoding="utf-8")
 
@@ -71,7 +92,7 @@ def anonymize_file(
     """
     text = read_input(input_path, pdf2md_cmd, on_stage)
     if on_stage is not None:
-        on_stage("detecting")
+        on_stage(Stage.DETECTING)
     result = anonymize(text, options)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,19 +103,38 @@ def anonymize_file(
         map_path.write_text(dumps_map(result.mapping), encoding="utf-8")
 
 
-# output_dir / map_dir accept either a fixed Path or a per-file callable.
-OutputDirArg = Union[str, Path, Callable[[Path], Path]]
+class OutputPolicy:
+    """Determines where each anonymized output file is written."""
 
+    __slots__ = ("_dir", "_next_to")
 
-def _resolve_dir(arg: OutputDirArg, input_path: Path) -> Path:
-    return Path(arg(input_path)) if callable(arg) else Path(arg)
+    def __init__(self, *, _dir: Path | None, _next_to: bool) -> None:
+        self._dir = _dir
+        self._next_to = _next_to
+
+    @classmethod
+    def into_directory(cls, d: str | Path) -> "OutputPolicy":
+        """Write all outputs into a fixed directory *d*."""
+        return cls(_dir=Path(d), _next_to=False)
+
+    @classmethod
+    def next_to_input(cls) -> "OutputPolicy":
+        """Write each output next to its source file."""
+        return cls(_dir=None, _next_to=True)
+
+    def resolve(self, input_path: Path) -> Path:
+        """Return the output *directory* for *input_path*."""
+        if self._next_to:
+            return input_path.parent
+        assert self._dir is not None
+        return self._dir
 
 
 def process_files(
     inputs: Iterable[str | Path],
     *,
-    output_dir: OutputDirArg,
-    map_dir: OutputDirArg | None = None,
+    output_policy: OutputPolicy,
+    map_policy: OutputPolicy | None = None,
     options: Options | None = None,
     pdf2md_cmd: str | None = None,
     cancel: CancelToken | None = None,
@@ -102,15 +142,11 @@ def process_files(
 ) -> Iterator[FileResult]:
     """Anonymize many files, yielding a :class:`FileResult` as each completes.
 
-    Each input ``report.pdf`` produces ``report.pdf.anon.md`` in the target
-    directory — the original extension is kept so same-stem inputs do not
-    collide. A ``report.pdf.map.json`` is written only when ``map_dir`` is
-    given (opt-in). A per-file failure is yielded but does not abort the rest.
-    If ``cancel`` is signalled, the remaining files are yielded as
-    ``cancelled`` without being processed. ``on_stage`` is called as
-    ``(index, total, input_path, stage)`` when each stage begins.
-    ``output_dir`` and ``map_dir`` may be a callable ``(input_path) -> dir``
-    to place each output next to its source.
+    Each input ``report.pdf`` produces ``report.pdf.anon.md`` in the directory
+    determined by *output_policy*. A ``report.pdf.map.json`` is written only
+    when *map_policy* is given (opt-in). A per-file failure is yielded but does
+    not abort the rest. If ``cancel`` is signalled, the remaining files are
+    yielded as ``cancelled`` without being processed.
     """
     options = options or Options()
     inputs = list(inputs)
@@ -119,15 +155,15 @@ def process_files(
     for index, raw in enumerate(inputs, start=1):
         input_path = Path(raw)
         if cancel is not None and cancel.cancelled:
-            yield FileResult(input_path, status="cancelled")
+            yield FileResult(input_path, status=FileStatus.CANCELLED)
             continue
-        out_dir = _resolve_dir(output_dir, input_path)
-        map_dir_resolved = _resolve_dir(map_dir, input_path) if map_dir is not None else None
+        out_dir = output_policy.resolve(input_path)
+        map_dir_resolved = map_policy.resolve(input_path) if map_policy is not None else None
         out_path = out_dir / f"{input_path.name}.anon.md"
         map_path = (map_dir_resolved / f"{input_path.name}.map.json") if map_dir_resolved is not None else None
         file_stage: StageCallback | None = None
         if on_stage is not None:
-            def file_stage(stage: str, _i: int = index, _p: Path = input_path) -> None:
+            def file_stage(stage: Stage, _i: int = index, _p: Path = input_path) -> None:
                 on_stage(_i, total, _p, stage)
         start = time.monotonic()
         try:
@@ -135,14 +171,14 @@ def process_files(
         except Exception as exc:  # noqa: BLE001 - reported per file, batch continues
             yield FileResult(
                 input_path,
-                status="failed",
+                status=FileStatus.FAILED,
                 error=str(exc),
                 duration=time.monotonic() - start,
             )
             continue
         yield FileResult(
             input_path,
-            status="done",
+            status=FileStatus.DONE,
             output_path=out_path,
             map_path=map_path,
             duration=time.monotonic() - start,

@@ -32,10 +32,11 @@ CORPUS_DIR = Path(__file__).parent / "corpus"
 
 
 def load_corpus(corpus_dir: Path = CORPUS_DIR) -> list[dict]:
-    """Load every ``*.json`` document from the corpus directory, name-sorted."""
+    """Load numbered corpus documents (``NN-*.json``) from the corpus directory."""
     return [
         json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(corpus_dir.glob("*.json"))
+        for path in sorted(p for p in corpus_dir.glob("*.json")
+                           if p.stem[:2].isdigit())
     ]
 
 

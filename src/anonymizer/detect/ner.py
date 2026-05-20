@@ -5,25 +5,50 @@ from __future__ import annotations
 import re
 import threading
 import warnings
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Callable
+from typing import Callable, Protocol
 
+from anonymizer.categories import Category
 from anonymizer.detect.dictionaries import load as _load_dict
+from anonymizer.detect import structural
 from anonymizer.replace import Span
 
 # Curated word lists, loaded from JSON resources in dictionaries/.
+# Résumé-specific lists (RESUME_*) live in structural.py.
 COLLOQUIAL_WORDS = _load_dict("colloquial_words")
 COUNTRY_NAMES = _load_dict("country_names")
 DOCUMENT_GRIFS = _load_dict("document_grifs")
 GENERIC_NOUNS = _load_dict("generic_nouns")
 ORG_ABBREVIATIONS = _load_dict("org_abbreviations")
 ORG_FORMS = _load_dict("org_forms")
-RESUME_FIELD_LABELS = _load_dict("resume_field_labels")
-RESUME_SECTION_HEADERS = _load_dict("resume_section_headers")
-RESUME_SKILL_SECTION_STEMS = _load_dict("resume_skill_section_stems")
 TECH_TERMS = _load_dict("tech_terms")
 
-_TYPE_TO_CATEGORY = {"PER": "PERSON", "ORG": "ORG", "LOC": "LOC"}
+_TYPE_TO_CATEGORY = {"PER": Category.PERSON, "ORG": Category.ORG, "LOC": Category.LOC}
+
+
+@dataclass
+class NerContext:
+    """Immutable per-call context passed to every SpanFilter."""
+    text: str
+    skill_ranges: list[tuple[int, int]]
+    stoplist: frozenset[str]
+
+
+class SpanFilter(Protocol):
+    """Single-responsibility predicate over a trimmed NER span."""
+    name: str
+
+    def keep(
+        self,
+        span,
+        value: str,
+        start: int,
+        stop: int,
+        category: "Category",
+        options,
+        ctx: NerContext,
+    ) -> bool: ...
 
 # Whitespace and markdown punctuation trimmed from the edges of a NER span.
 _EDGE_CHARS = "#*>- \t\r"
@@ -62,8 +87,8 @@ _STOPLIST_TERMS: tuple[str, ...] = (
     *ORG_FORMS,
     *ORG_ABBREVIATIONS,
     *_MONTH_NAMES,
-    *RESUME_SECTION_HEADERS,
-    *RESUME_FIELD_LABELS,
+    *structural.RESUME_SECTION_HEADERS,
+    *structural.RESUME_FIELD_LABELS,
 )
 
 # Casefolded, whitespace-collapsed keys of the curated developer-tool stoplist
@@ -72,40 +97,11 @@ _TECH_KEYS: frozenset[str] = frozenset(
     " ".join(t.split()).casefold() for t in TECH_TERMS
 )
 
-# A markdown ATX header line: leading #'s (depth), then the heading text.
-_HEADER_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+# Backward-compat alias; logic now lives in structural.py.
+_skill_section_ranges = structural.skill_section_ranges
 
-def _skill_section_ranges(text: str) -> list[tuple[int, int]]:
-    """Character ranges of skills/technologies/competencies sections.
-
-    A section starts at a markdown header whose text names a skills block (see
-    ``RESUME_SKILL_SECTION_STEMS``) and runs to the next header of the same or
-    shallower depth, or to the end of the text. ``ORG``/``LOC`` spans starting
-    inside any returned range are dropped — see ADR-0007.
-    """
-    headers = [
-        (m.start(), len(m.group(1)), m.group(2))
-        for m in _HEADER_RE.finditer(text)
-    ]
-    ranges: list[tuple[int, int]] = []
-    for i, (pos, depth, title) in enumerate(headers):
-        folded = title.casefold()
-        if not any(stem in folded for stem in RESUME_SKILL_SECTION_STEMS):
-            continue
-        end = len(text)
-        for next_pos, next_depth, _title in headers[i + 1:]:
-            if next_depth <= depth:
-                end = next_pos
-                break
-        ranges.append((pos, end))
-    return ranges
-
-# (Segmenter, NewsMorphTagger, NewsNERTagger, MorphVocab, Doc) — built once,
-# the model is the costly part.
-_pipeline = None
-_pipeline_lock = threading.Lock()
-# Lemma keys of _STOPLIST_TERMS — built once, lazily (needs the pipeline).
-_stoplist_keys: frozenset[str] | None = None
+_default: "NerPipeline | None" = None
+_default_lock = threading.Lock()
 
 
 def _ensure_pkg_resources() -> None:
@@ -138,6 +134,19 @@ def _ensure_pkg_resources() -> None:
     sys.modules["pkg_resources"] = mod
 
 
+# Install the pkg_resources stub once at module import time so pymorphy2's
+# entry-point discovery works in Briefcase bundles (no setuptools installed).
+# The deprecation warning is suppressed here; subsequent imports are already
+# past this point and produce no further warnings.
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message="pkg_resources is deprecated",
+        category=UserWarning,
+    )
+    _ensure_pkg_resources()
+
+
 def _build_pipeline(
     on_step: Callable[[str], None] | None = None,
 ) -> tuple:
@@ -147,76 +156,110 @@ def _build_pipeline(
         if on_step:
             on_step(msg)
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="pkg_resources is deprecated",
-            category=UserWarning,
-        )
-        _ensure_pkg_resources()
-        _s("importing natasha…")
-        from natasha import (  # noqa: PLC0415
-            Doc,
-            MorphVocab,
-            NewsEmbedding,
-            NewsMorphTagger,
-            NewsNERTagger,
-            Segmenter,
-        )
-        _s("loading embedding…")
-        emb = NewsEmbedding()
-        _s("morph tagger…")
-        morph = NewsMorphTagger(emb)
-        _s("NER tagger…")
-        ner = NewsNERTagger(emb)
-        _s("vocab…")
-        return (Segmenter(), morph, ner, MorphVocab(), Doc)
+    _s("importing natasha…")
+    from natasha import (  # noqa: PLC0415
+        Doc,
+        MorphVocab,
+        NewsEmbedding,
+        NewsMorphTagger,
+        NewsNERTagger,
+        Segmenter,
+    )
+    _s("loading embedding…")
+    emb = NewsEmbedding()
+    _s("morph tagger…")
+    morph = NewsMorphTagger(emb)
+    _s("NER tagger…")
+    ner = NewsNERTagger(emb)
+    _s("vocab…")
+    return (Segmenter(), morph, ner, MorphVocab(), Doc)
+
+
+class NerPipeline:
+    """Built natasha NER pipeline with an integrated lemma cache and stoplist."""
+
+    def __init__(self, on_step: Callable[[str], None] | None = None) -> None:
+        (self._segmenter, self._morph_tagger, self._ner_tagger,
+         self._morph_vocab, self._Doc) = _build_pipeline(on_step)
+        self._stoplist_keys: frozenset[str] | None = None
+        self.lemma_key = lru_cache(maxsize=2048)(self._compute_lemma_key)
+
+    def _compute_lemma_key(self, text: str) -> str:
+        """Word-by-word lemmatized, casefolded key — insensitive to declension."""
+        doc = self._Doc(text)
+        doc.segment(self._segmenter)
+        doc.tag_morph(self._morph_tagger)
+        parts: list[str] = []
+        for token in doc.tokens:
+            if re.search(r"\w", token.text):
+                token.lemmatize(self._morph_vocab)
+                parts.append(token.lemma.casefold())
+        return " ".join(parts)
+
+    @property
+    def stoplist(self) -> frozenset[str]:
+        """Lemma keys of the non-sensitive stoplist, built once on first use."""
+        if self._stoplist_keys is None:
+            self._stoplist_keys = frozenset(self.lemma_key(t) for t in _STOPLIST_TERMS)
+        return self._stoplist_keys
+
+    def detect(self, text: str, options) -> list[Span]:
+        """Detect PERSON, ORG, and LOC spans with Natasha.
+
+        PERSON is always tokenized; ORG/LOC are suppressed by ``ner_org=False`` /
+        ``ner_loc=False`` on ``options``. NER runs over a case-normalized copy (see
+        ``_normalize_caps``) so ALL-CAPS entities are tagged; because that rewrite
+        is length-preserving, each span's offsets index the original text and its
+        value is sliced from the original (un-normalized) ``text``. Each span is
+        trimmed (clipped at the first newline, edge whitespace/markdown stripped)
+        and dropped when its value reduces to a known non-sensitive lemma key.
+        Adjacent same-category spans bridged only by a spaced hyphen are then
+        merged (see ``_merge_hyphenated``).
+        """
+        doc = self._Doc(_normalize_caps(text))
+        doc.segment(self._segmenter)
+        doc.tag_morph(self._morph_tagger)
+        doc.tag_ner(self._ner_tagger)
+        ctx = NerContext(text, _skill_section_ranges(text), self.stoplist)
+        spans: list[Span] = []
+        for span in doc.spans:
+            category = _TYPE_TO_CATEGORY.get(span.type)
+            if category is None:
+                continue
+            original = text[span.start:span.start + len(span.text)]
+            trimmed = _trim(span.start, original)
+            if trimmed is None:
+                continue
+            start, stop, value = trimmed
+            if all(f.keep(span, value, start, stop, category, options, ctx) for f in FILTERS):
+                spans.append(Span(start, stop, category, value))
+        return _merge_hyphenated(text, spans)
+
+
+def get_default(on_step: Callable[[str], None] | None = None) -> NerPipeline:
+    """Return (or build) the module-level singleton NerPipeline."""
+    global _default
+    if _default is not None:
+        return _default
+    with _default_lock:
+        if _default is None:
+            _default = NerPipeline(on_step=on_step)
+    return _default
 
 
 def warmup(on_step: Callable[[str], None] | None = None) -> None:
     """Load the NER pipeline eagerly, reporting each stage via *on_step*."""
-    global _pipeline
-    if _pipeline is not None:
-        return
-    with _pipeline_lock:
-        if _pipeline is None:
-            _pipeline = _build_pipeline(on_step)
+    get_default(on_step)
 
 
-def _get_pipeline() -> tuple:
-    global _pipeline
-    if _pipeline is None:
-        with _pipeline_lock:
-            if _pipeline is None:
-                _pipeline = _build_pipeline()
-    return _pipeline
-
-
-@lru_cache(maxsize=2048)
 def _lemma_key(text: str) -> str:
-    """Word-by-word lemmatized, casefolded key — insensitive to declension.
-
-    Both the stoplist terms and each span value are reduced with this same
-    function, so an imperfect lemma is harmless as long as it is consistent.
-    """
-    segmenter, morph_tagger, _ner, morph_vocab, Doc = _get_pipeline()
-    doc = Doc(text)
-    doc.segment(segmenter)
-    doc.tag_morph(morph_tagger)
-    parts: list[str] = []
-    for token in doc.tokens:
-        if re.search(r"\w", token.text):
-            token.lemmatize(morph_vocab)
-            parts.append(token.lemma.casefold())
-    return " ".join(parts)
+    """Delegate to the singleton pipeline's cached lemma_key."""
+    return get_default().lemma_key(text)
 
 
 def _get_stoplist() -> frozenset[str]:
-    """Lemma keys of the non-sensitive stoplist, built once on first use."""
-    global _stoplist_keys
-    if _stoplist_keys is None:
-        _stoplist_keys = frozenset(_lemma_key(t) for t in _STOPLIST_TERMS)
-    return _stoplist_keys
+    """Delegate to the singleton pipeline's stoplist."""
+    return get_default().stoplist
 
 
 def _trim(start: int, value: str) -> tuple[int, int, str] | None:
@@ -332,69 +375,77 @@ def _normalize_caps(text: str) -> str:
     return _ALLCAPS_WORD.sub(_rewrite, text)
 
 
-def detect(text: str, options) -> list[Span]:
-    """Detect PERSON, ORG, and LOC spans with Natasha.
+class _CategoryRouting:
+    name = "CategoryRouting"
 
-    PERSON is always tokenized; ORG/LOC are suppressed by ``ner_org=False`` /
-    ``ner_loc=False`` on ``options``. NER runs over a case-normalized copy (see
-    ``_normalize_caps``) so ALL-CAPS entities are tagged; because that rewrite
-    is length-preserving, each span's offsets index the original text and its
-    value is sliced from the original (un-normalized) ``text``. Each span is
-    trimmed (clipped at the first newline, edge whitespace/markdown stripped)
-    and dropped when its value reduces to a known non-sensitive lemma key.
-    Adjacent same-category spans bridged only by a spaced hyphen are then
-    merged (see ``_merge_hyphenated``).
-    """
-    segmenter, morph_tagger, ner_tagger, _vocab, Doc = _get_pipeline()
-    doc = Doc(_normalize_caps(text))
-    doc.segment(segmenter)
-    doc.tag_morph(morph_tagger)
-    doc.tag_ner(ner_tagger)
-    stoplist = _get_stoplist()
-    skill_ranges = _skill_section_ranges(text)
+    def keep(self, span, value, start, stop, category, options, ctx) -> bool:
+        if category == Category.ORG and not getattr(options, "ner_org", True):
+            return False
+        if category == Category.LOC and not getattr(options, "ner_loc", True):
+            return False
+        return True
 
-    spans: list[Span] = []
-    for span in doc.spans:
-        category = _TYPE_TO_CATEGORY.get(span.type)
-        if category is None:
-            continue
-        if category == "ORG" and not getattr(options, "ner_org", True):
-            continue
-        if category == "LOC" and not getattr(options, "ner_loc", True):
-            continue
-        original = text[span.start:span.start + len(span.text)]
-        trimmed = _trim(span.start, original)
-        if trimmed is None:
-            continue
-        start, stop, value = trimmed
-        # POS filter (PERSON): a span with no proper-noun token is a
-        # common-noun false positive ("Программист", "Желательное").
-        if category == "PERSON" and not _has_propn(span, start, stop):
-            continue
-        # POS filter (ORG/LOC, NER-007): drop a span built purely from
-        # ordinary Russian common-noun-class words — transcript false
-        # positives like "Вокруг"/"Канцелярия". A real org/place keeps a
-        # PROPN token, a Latin-script company is tagged X — both survive
-        # (see _has_propn_or_foreign). Gated by ner_pos_filter: it lowers
-        # ORG/LOC recall, so it can be turned off for structured documents.
+
+class _PersonPropn:
+    name = "PersonPropn"
+
+    def keep(self, span, value, start, stop, category, options, ctx) -> bool:
+        if category == Category.PERSON:
+            return _has_propn(span, start, stop)
+        return True
+
+
+class _OrgLocPropn:
+    name = "OrgLocPropn"
+
+    def keep(self, span, value, start, stop, category, options, ctx) -> bool:
         if (
-            category in ("ORG", "LOC")
+            category in (Category.ORG, Category.LOC)
             and getattr(options, "ner_pos_filter", True)
-            and not _has_propn_or_foreign(span, start, stop)
         ):
-            continue
-        # Structural suppression: drop an ORG/LOC span that starts inside a
-        # skills/technologies/competencies section (ADR-0007). Such a section
-        # lists tools, not employers; Natasha mistags the tool names. The
-        # curated _TECH_TERMS stoplist below stays as a precision backstop.
-        if category in ("ORG", "LOC") and any(
-            lo <= start < hi for lo, hi in skill_ranges
-        ):
-            continue
-        # Curated developer-tool stoplist (ORG/PERSON only).
-        if category in ("ORG", "PERSON") and _tech_key(value) in _TECH_KEYS:
-            continue
-        if _lemma_key(value) in stoplist:
-            continue
-        spans.append(Span(start, stop, category, value))
-    return _merge_hyphenated(text, spans)
+            return _has_propn_or_foreign(span, start, stop)
+        return True
+
+
+class _SkillSection:
+    name = "SkillSection"
+
+    def keep(self, span, value, start, stop, category, options, ctx) -> bool:
+        if category in (Category.ORG, Category.LOC):
+            return not structural.is_in_any_range(start, ctx.skill_ranges)
+        return True
+
+
+class _TechStoplist:
+    name = "TechStoplist"
+
+    def keep(self, span, value, start, stop, category, options, ctx) -> bool:
+        if category in (Category.ORG, Category.PERSON):
+            return _tech_key(value) not in _TECH_KEYS
+        return True
+
+
+class _LemmaStoplist:
+    name = "LemmaStoplist"
+
+    def keep(self, span, value, start, stop, category, options, ctx) -> bool:
+        return _lemma_key(value) not in ctx.stoplist
+
+
+# Ordered filter chain applied to every trimmed NER span.
+# CategoryRouting → PersonPropn → OrgLocPropn → SkillSection
+# → TechStoplist → LemmaStoplist
+# Re-ordering requires an explicit snapshot-test update (see test_ner_filters.py).
+FILTERS: tuple[SpanFilter, ...] = (
+    _CategoryRouting(),
+    _PersonPropn(),
+    _OrgLocPropn(),
+    _SkillSection(),
+    _TechStoplist(),
+    _LemmaStoplist(),
+)
+
+
+def detect(text: str, options) -> list[Span]:
+    """Detect PERSON, ORG, and LOC spans; delegates to the singleton NerPipeline."""
+    return get_default().detect(text, options)

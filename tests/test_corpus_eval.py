@@ -1,10 +1,15 @@
-"""QA-001: synthetic labelled corpus and the precision/recall harness."""
+"""QA-001/QA-002: synthetic labelled corpus and the precision/recall harness."""
 
+import json
 import re
+from pathlib import Path
 
 from anonymizer.api import Options
 from anonymizer.detect import detect_all
 from tests.evaluate_corpus import evaluate, format_report, load_corpus
+
+_BASELINE_PATH = Path(__file__).parent / "corpus" / "baseline_metrics.json"
+_TOLERANCE = 0.01
 
 
 def test_corpus_loads_labelled_documents():
@@ -58,6 +63,19 @@ def test_pos_filter_improves_loc_precision_on_corpus():
     on_loc = on.get("LOC", {}).get("precision", 1.0)
     off_loc = off.get("LOC", {}).get("precision", 1.0)
     assert on_loc > off_loc
+
+
+def test_metrics_match_baseline():
+    """QA-002: every per-category metric must stay within ±0.01 of the stored baseline."""
+    baseline = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
+    current = evaluate(load_corpus())
+    for category, base in baseline.items():
+        cur = current.get(category, {})
+        for metric in ("precision", "recall"):
+            assert abs(cur.get(metric, 0.0) - base[metric]) <= _TOLERANCE, (
+                f"{category}.{metric}: current={cur.get(metric):.3f} "
+                f"baseline={base[metric]:.3f} delta > {_TOLERANCE}"
+            )
 
 
 def test_corpus_contains_no_real_pii():

@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, NamedTuple
 
+from anonymizer.categories import Category
+
 # Matches any existing {{...}} placeholder so generated tokens never collide
 # with braces already present in the input.
 _EXISTING_TOKEN_RE = re.compile(r"\{\{[^{}]*\}\}")
@@ -16,7 +18,7 @@ class Span(NamedTuple):
 
     start: int
     end: int
-    category: str
+    category: Category
     value: str
 
 

@@ -5,6 +5,103 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- CLI-003: replaced the `sys.argv` rewrite in `cli.main()` with an argparse-native
+  routing strategy. Subcommand names are now derived from the parser itself via
+  the subparsers action's `choices` dict, so adding a new `sub.add_parser(...)` call
+  automatically extends routing with no inclusion-list edit. When no subcommand is
+  given, `main()` builds a standalone anonymize parser (prog="anon") and parses
+  directly. `anon doc.md`, `anon restore out.md --map m.json`, and `anon --help`
+  all behave as before. ADR not required — CLI contract unchanged; pure refactor.
+- QA-002: added `tests/corpus/baseline_metrics.json` storing per-category
+  precision/recall (3 decimal places) and tp/fp/fn counts. Added
+  `test_metrics_match_baseline` to `test_corpus_eval.py` asserting each metric
+  stays within ±0.01 of the baseline. Updated `load_corpus()` to only load
+  numbered corpus files (`NN-*.json`) so the baseline JSON is not treated as a
+  corpus document. Baseline must be updated manually when detection intentionally
+  changes. ADR not required — no detection logic change.
+- NER-011: moved `_ensure_pkg_resources()` call to module import time in a
+  `warnings.catch_warnings()` block that suppresses the `pkg_resources is deprecated`
+  UserWarning once for the whole process. Removed the per-build `with warnings.catch_warnings()`
+  block and `_ensure_pkg_resources()` call from `_build_pipeline`. The stub is installed
+  before any natasha-side import that needs it. ADR not required — no behaviour change.
+- NER-010: created `src/anonymizer/detect/structural.py` with `skill_section_ranges(text)`
+  and `is_in_any_range(start, ranges)`. Moved `_HEADER_RE`, `RESUME_FIELD_LABELS`,
+  `RESUME_SECTION_HEADERS`, `RESUME_SKILL_SECTION_STEMS` from `ner.py` to `structural.py`.
+  `ner.py` imports `structural` and delegates; `_skill_section_ranges` kept as a
+  backward-compat alias. `_SkillSection.keep()` updated to use `is_in_any_range()`.
+  `_STOPLIST_TERMS` references `structural.RESUME_*` constants. Added 11 tests in
+  `tests/test_structural.py`. ADR not required — pure refactor, no detection change.
+- NER-009: introduced `NerPipeline` class in `src/anonymizer/detect/ner.py`.
+  The class builds the natasha components in `__init__`, exposes `lemma_key(text)`
+  as an instance-level `lru_cache`d method, owns the stoplist as a lazy property,
+  and provides `detect(text, options) -> list[Span]` using the `FILTERS` chain.
+  Module-level globals `_pipeline` and `_stoplist_keys` removed; replaced by
+  `_default: NerPipeline | None` and `get_default()` factory with double-checked
+  locking. `warmup(on_step=...)` and module-level `detect()` delegate to the
+  singleton. ADR not required — backward-compat API unchanged; pure refactor.
+- NER-008: extracted `SpanFilter(Protocol)` chain from `ner.detect()`. Added
+  `NerContext` dataclass (`text`, `skill_ranges`, `stoplist`) and six concrete
+  filters — `_CategoryRouting`, `_PersonPropn`, `_OrgLocPropn`, `_SkillSection`,
+  `_TechStoplist`, `_LemmaStoplist` — collected in a module-level `FILTERS` tuple.
+  `detect()` body is now 19 lines (was 53). Ordering locked in `tests/test_ner_filters.py`
+  snapshot; 21 new unit tests cover each filter independently. ADR not required —
+  pure refactor, no detection output change.
+- DETECT-003: converted `Rule` in `src/anonymizer/detect/regex_rules.py` from a
+  `NamedTuple` to a `@dataclass(frozen=True)` with a new `name: str` field as the
+  first argument. Every entry in `RULES` now carries a stable identifier (e.g.
+  `"INN_LABELED"`, `"INN_BARE"`, `"SECRET_PEM"`, `"SECRET_HIGH_ENTROPY"`). Added
+  `tests/test_rule_ordering.py` with a snapshot test that locks the current rule
+  sequence. Architecture test updated to allow `Rule(...)` name strings that coincide
+  with category names. ADR not required — purely internal refactor with no API changes.
+- CORE-009: `detect/__init__.py` now imports `ner` at module scope (no more lazy
+  `try/except ImportError`). `getattr(options, "consistency_sweep", True)` replaced
+  with `options.consistency_sweep` (the field has always been a dataclass default).
+  A missing `natasha` install now fails loudly at import rather than silently skipping
+  NER detection.
+- CORE-008: replaced `OutputDirArg` Union and `_resolve_dir` in `batch.py` with
+  `class OutputPolicy` providing `OutputPolicy.into_directory(d)` and
+  `OutputPolicy.next_to_input()` classmethods and a `resolve(input_path) -> Path`
+  method. `process_files` now accepts `output_policy`/`map_policy` parameters.
+  `cli.py`, `app.py`, and `batch_controller.py` updated accordingly. Tests updated.
+- CORE-007: added `FileStatus` (DONE/FAILED/CANCELLED) and `Stage` (CONVERTING/DETECTING)
+  `StrEnum` classes in `src/anonymizer/batch.py`. `FileResult.status` narrowed to
+  `FileStatus`; all `on_stage` callbacks use `Stage` values. Raw string literals
+  replaced in `batch.py`, `cli.py`, `app.py`, and `batch_controller.py`. Architecture
+  test added to `test_architecture.py` verifying no bare status/stage strings remain.
+- CORE-006: introduced `Category` (`StrEnum`) in `src/anonymizer/categories.py` with
+  all 20 detection category members. `Span.category` narrowed from `str` to `Category`;
+  all `Rule(...)` entries in `regex_rules.py` use `Category.<NAME>`; `_TYPE_TO_CATEGORY`
+  and every `if category == ...` check in `ner.py` use `Category` enum values. Because
+  `Category` is a `StrEnum`, the `{{CATEGORY_N}}` wire format and all string comparisons
+  are unchanged. Architecture test added to `tests/test_architecture.py`; new
+  `tests/test_categories.py` verifies equality, f-string formatting, and member count.
+- UI-015: replaced `_run_pip` / `_run_pip_subprocess` / `_pip_install(upgrade=…)` in
+  `pdf_backend.py` with `PipRunner` Protocol, `InProcessPipRunner`, and
+  `SubprocessPipRunner`. Boolean flag replaced by separate `install_backend` /
+  `update_backend` functions. Added `resolve_cert()` free function. `sys.path.insert`
+  for the pip wheel now happens at most once per `InProcessPipRunner` instance. Two new
+  tests verify the exit-code-to-RuntimeError mapping and the single-insertion invariant.
+- UI-014: created `src/anonymizer_ui/drag_drop_overlay.py` with a `setup()` function
+  that wraps `appkit_bridge.setup_drag_drop` and adds pure-Python `.pdf`/`.md`
+  extension filtering. `app.py._setup_drag_drop` now calls
+  `drag_drop_overlay.setup(...)`. Two unit tests verify extension filtering without
+  requiring a real ObjC runtime.
+- UI-013: extracted `_anonymize_in_thread` helper on `AnonymizerApp`, collapsing the
+  duplicate thread-and-notify boilerplate in `_do_anon_file_to_clipboard` and
+  `_anon_clipboard_to_clipboard`. Both are now one-line delegating wrappers.
+  Empty-source (empty clipboard) early-exit is now inside the helper.
+- UI-012: extracted `MenuBarController` into `src/anonymizer_ui/menubar_controller.py`.
+  It owns `_status_icon`, `_status_commands_added`, `_busy_count`,
+  `_saved_status_icon_image`, and all menu-bar lifecycle methods
+  (`create_status_item`, `remove_status_item`, `hide_window_to_menubar`,
+  `show_main_window`, `begin_busy`, `end_busy`). `app.py` forwards to the
+  controller; `app.py` no longer references `toga.MenuStatusIcon` directly.
+  All `test_on_window_close_*`, `test_on_menubar_pref_change_*`, and
+  `test_status_bar_has_two_clipboard_commands` tests rewritten to drive the
+  controller directly.
+- REF-001: added `tests/test_architecture.py` with `_files_matching` and `_grep_count`
+  helpers and a smoke test asserting the core package does not import Toga.
+  This file is the canonical home for Phase 8 module-boundary checks.
 - UI-008: two status-bar quick actions.
   "Anonymize to Clipboard…" is replaced by two distinct menu items:
   **"Anonymize File to Clipboard…"** opens a file picker each time it is

@@ -114,6 +114,67 @@ def test_pdf_backend_line_writer():
 
 
 
+def test_in_process_pip_runner_exit_code_to_error(monkeypatch, tmp_path):
+    """InProcessPipRunner.run raises RuntimeError when pip exits non-zero."""
+    import sys
+    import types
+    import pytest
+    from anonymizer_ui import pdf_backend
+
+    # Provide a fake pip wheel so the path-insert step doesn't touch real pip
+    fake_wheel = str(tmp_path / "pip-24.0-fake.whl")
+    (tmp_path / "pip-24.0-fake.whl").touch()
+    monkeypatch.setattr(pdf_backend, "_find_pip_wheel", lambda: fake_wheel)
+
+    calls: list[list[str]] = []
+
+    def _fake_pip_main(args: list[str]) -> int:
+        calls.append(args)
+        return 2  # non-zero exit → RuntimeError
+
+    # Inject the fake via sys.modules so the lazy import inside run() picks it up
+    fake_main_mod = types.SimpleNamespace(main=_fake_pip_main)
+    fake_cli_mod = types.SimpleNamespace(main=fake_main_mod)
+    fake_internal = types.SimpleNamespace(cli=fake_cli_mod)
+    monkeypatch.setitem(sys.modules, "pip._internal", fake_internal)
+    monkeypatch.setitem(sys.modules, "pip._internal.cli", fake_cli_mod)
+    monkeypatch.setitem(sys.modules, "pip._internal.cli.main", fake_main_mod)
+
+    runner = pdf_backend.InProcessPipRunner()
+    with pytest.raises(RuntimeError, match="pip exited with code 2"):
+        runner.run(["install", "some-package"])
+    assert calls  # pip was actually called
+
+
+def test_in_process_pip_runner_path_insert_once(monkeypatch, tmp_path):
+    """sys.path.insert happens at most once per InProcessPipRunner instance."""
+    import sys
+    import types
+    from anonymizer_ui import pdf_backend
+
+    fake_wheel = str(tmp_path / "pip-24.0-fake.whl")
+    (tmp_path / "pip-24.0-fake.whl").touch()
+    monkeypatch.setattr(pdf_backend, "_find_pip_wheel", lambda: fake_wheel)
+    # Ensure fake_wheel is not already on sys.path
+    if fake_wheel in sys.path:
+        sys.path.remove(fake_wheel)
+
+    fake_main_mod = types.SimpleNamespace(main=lambda args: 0)
+    fake_cli_mod = types.SimpleNamespace(main=fake_main_mod)
+    fake_internal = types.SimpleNamespace(cli=fake_cli_mod)
+    monkeypatch.setitem(sys.modules, "pip._internal", fake_internal)
+    monkeypatch.setitem(sys.modules, "pip._internal.cli", fake_cli_mod)
+    monkeypatch.setitem(sys.modules, "pip._internal.cli.main", fake_main_mod)
+
+    runner = pdf_backend.InProcessPipRunner()
+    runner.run(["install", "foo"])
+    runner.run(["install", "bar"])
+
+    count = sys.path.count(fake_wheel)
+    assert count == 1, f"expected 1 insertion, found {count}"
+    sys.path.remove(fake_wheel)  # cleanup
+
+
 def test_pdf_backend_installed_version_absent(tmp_path, monkeypatch):
     """installed_version() returns None when the backend is not installed."""
     from anonymizer_ui import pdf_backend
@@ -212,6 +273,55 @@ def test_reveal_copy_enabled_only_with_valid_selection(tmp_path):
     AnonymizerApp.on_table_select(obj, None)
     assert not reveal.enabled
     assert not copy.enabled
+
+
+# --- UI-014: drag-drop overlay ------------------------------------------
+
+
+def test_drag_drop_overlay_filters_extensions(monkeypatch):
+    """setup() passes only .pdf/.md paths to on_paths; other extensions are dropped."""
+    from pathlib import Path
+    from anonymizer_ui import drag_drop_overlay
+
+    captured_on_paths = [None]
+
+    def fake_setup_drag_drop(window, on_paths, on_highlight):
+        captured_on_paths[0] = on_paths
+        return object()
+
+    monkeypatch.setattr(drag_drop_overlay.appkit_bridge, "setup_drag_drop", fake_setup_drag_drop)
+
+    received: list[Path] = []
+    drag_drop_overlay.setup(None, on_paths=received.extend, on_highlight=lambda _: None)
+
+    # Simulate a drag with mixed extensions
+    captured_on_paths[0](["report.pdf", "notes.md", "photo.png", "data.csv", "doc.PDF"])
+
+    suffixes = {p.suffix.lower() for p in received}
+    assert ".pdf" in suffixes
+    assert ".md" in suffixes
+    assert ".png" not in suffixes
+    assert ".csv" not in suffixes
+    assert len(received) == 3  # report.pdf, notes.md, doc.PDF
+
+
+def test_drag_drop_overlay_no_callback_when_all_filtered(monkeypatch):
+    """on_paths is NOT called when all dragged files are rejected extensions."""
+    from anonymizer_ui import drag_drop_overlay
+
+    captured_on_paths = [None]
+
+    def fake_setup_drag_drop(window, on_paths, on_highlight):
+        captured_on_paths[0] = on_paths
+        return object()
+
+    monkeypatch.setattr(drag_drop_overlay.appkit_bridge, "setup_drag_drop", fake_setup_drag_drop)
+
+    calls: list = []
+    drag_drop_overlay.setup(None, on_paths=lambda p: calls.append(p), on_highlight=lambda _: None)
+    captured_on_paths[0](["image.png", "spreadsheet.xlsx"])
+
+    assert calls == []
 
 
 # --- UI-005: drag-and-drop / paste-files --------------------------------
@@ -319,14 +429,19 @@ def test_on_menubar_pref_change_saves_and_removes_item(tmp_path, monkeypatch):
     import types
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui.app import AnonymizerApp
+    from anonymizer_ui.menubar_controller import MenuBarController
 
     monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
     monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
 
     removed = []
-    obj = types.SimpleNamespace(
-        _remove_status_item=lambda: removed.append(1),
+
+    # Drive via AnonymizerApp._on_menubar_pref_change with a _menubar that records calls.
+    mock_menubar = types.SimpleNamespace(
+        remove_status_item=lambda: removed.append(1),
+        create_status_item=lambda: None,
     )
+    obj = types.SimpleNamespace(_menubar=mock_menubar)
     widget = types.SimpleNamespace(value=False)
     AnonymizerApp._on_menubar_pref_change(obj, widget)
 
@@ -367,39 +482,42 @@ def test_pdf_backend_url_matches_pyproject():
 
 
 def test_anon_clipboard_to_clipboard_anonymizes_text():
-    """_anon_clipboard_to_clipboard reads clipboard text, anonymizes, writes back."""
+    """_anonymize_in_thread anonymizes text, writes to clipboard, and notifies."""
     import asyncio
     import types
     from anonymizer_ui.app import AnonymizerApp
 
-    clipboard = ["Контакт: user@example.com"]
     written: list[str] = []
     notifs: list[tuple[str, str]] = []
 
     async def _run() -> None:
         obj = types.SimpleNamespace(
             loop=asyncio.get_event_loop(),
-            _read_clipboard=lambda: clipboard[0],
             _copy_to_clipboard=lambda t: written.append(t),
             _send_notification=lambda title, body: notifs.append((title, body)),
             _begin_busy=lambda: None,
             _end_busy=lambda: None,
-            _log=lambda msg: None,
         )
-        await AnonymizerApp._anon_clipboard_to_clipboard(obj)
+        await AnonymizerApp._anonymize_in_thread(
+            obj,
+            source=lambda: "Контакт: user@example.com",
+            busy_title="Anonymizing…",
+            busy_body="Clipboard text",
+            done_title="Anonymized to clipboard",
+            done_body="Clipboard text anonymized",
+        )
 
     asyncio.run(_run())
 
     assert written, "expected anonymized text to be written to clipboard"
     assert "{{EMAIL_1}}" in written[0]
     assert notifs
-    # First a "started" notification, then a completion one
     assert any("anonymizing" in t.lower() for t, _ in notifs)
     assert any("anonymized" in t.lower() for t, _ in notifs)
 
 
 def test_anon_clipboard_to_clipboard_empty_sends_notification():
-    """Empty clipboard fires a notification without writing anything."""
+    """Empty source fires a 'Clipboard is empty' notification without writing anything."""
     import asyncio
     import types
     from anonymizer_ui.app import AnonymizerApp
@@ -409,27 +527,30 @@ def test_anon_clipboard_to_clipboard_empty_sends_notification():
 
     async def _run() -> None:
         obj = types.SimpleNamespace(
-            loop=asyncio.get_event_loop(),
-            _read_clipboard=lambda: None,
-            _copy_to_clipboard=lambda t: written.append(t),
             _send_notification=lambda title, body: notifs.append((title, body)),
-            _log=lambda msg: None,
         )
-        await AnonymizerApp._anon_clipboard_to_clipboard(obj)
+        await AnonymizerApp._anonymize_in_thread(
+            obj,
+            source=lambda: "",
+            busy_title="Anonymizing…",
+            busy_body="Clipboard text",
+            done_title="Anonymized to clipboard",
+            done_body="Clipboard text anonymized",
+        )
 
     asyncio.run(_run())
 
-    assert not written, "nothing should be written when clipboard is empty"
+    assert not written, "nothing should be written when source is empty"
     assert notifs
     combined = " ".join(notifs[0]).lower()
     assert "empty" in combined
 
 
 def test_status_bar_has_two_clipboard_commands():
-    """_create_status_item wires both 'Anonymize File to Clipboard…' and 'Anonymize Clipboard'."""
+    """create_status_item wires both 'Anonymize File to Clipboard…' and 'Anonymize Clipboard'."""
     import types
     import unittest.mock as mock
-    from anonymizer_ui.app import AnonymizerApp
+    from anonymizer_ui.menubar_controller import MenuBarController
 
     commands_added: list[str] = []
 
@@ -439,35 +560,36 @@ def test_status_bar_has_two_clipboard_commands():
                 commands_added.append(c.text)
 
         def __delitem__(self, key):
-            raise KeyError(key)  # caught by the try/except in _create_status_item
+            raise KeyError(key)
 
     class _FakeStatusIcons:
         def __contains__(self, x):
-            return True  # icon already "added" — skip status_icons.add()
+            return True  # icon already present — skip status_icons.add()
 
         def add(self, x):
             pass
 
         commands = _FakeCmds()
 
-    icon_sentinel = object()
-    obj = types.SimpleNamespace(
-        _status_icon=icon_sentinel,
-        _status_commands_added=False,
+    def _fake_command(handler, text, **kw):
+        return types.SimpleNamespace(text=text)
+
+    fake_app = types.SimpleNamespace(
+        formal_name="Anonymizer",
         status_icons=_FakeStatusIcons(),
         _show_main_window=lambda *a, **kw: None,
         _cmd_anon_file_to_clipboard=lambda *a, **kw: None,
         _cmd_anon_clipboard_to_clipboard=lambda *a, **kw: None,
         _cmd_quit=lambda *a, **kw: None,
-        _style_status_icon=lambda: None,
         _log=lambda msg: None,
     )
 
-    def _fake_command(handler, text, **kw):
-        return types.SimpleNamespace(text=text)
+    ctrl = MenuBarController(fake_app)
+    # Pre-seed a status icon so create_status_item skips toga.MenuStatusIcon creation
+    ctrl._status_icon = object()
 
-    with mock.patch("anonymizer_ui.app.toga.Command", side_effect=_fake_command):
-        AnonymizerApp._create_status_item(obj)
+    with mock.patch("toga.Command", side_effect=_fake_command):
+        ctrl.create_status_item()
 
     assert "Anonymize File to Clipboard…" in commands_added
     assert "Anonymize Clipboard" in commands_added

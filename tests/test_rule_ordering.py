@@ -1,0 +1,41 @@
+"""Snapshot test that locks the ordering of regex rules (DETECT-003)."""
+
+from anonymizer.detect.regex_rules import RULES
+
+
+def test_rule_ordering_snapshot():
+    assert [r.name for r in RULES] == [
+        "EMAIL",
+        "URL",
+        "SECRET_PEM",
+        "SECRET_KEY_VALUE",
+        "SECRET_HEX_SERIAL",
+        "ORG",
+        "PASSPORT_LABELED",
+        "PASSPORT_ISSUE_DATE",
+        "PASSPORT_DEPT_CODE",
+        "PASSPORT_ISSUER",
+        "ADDRESS_LABELED",
+        "ADDRESS_INLINE",
+        "SNILS_LABELED",
+        "SNILS_BARE",
+        "INN_LABELED",
+        "KPP",
+        "BIK",
+        "OGRNIP_LABELED",
+        "OGRNIP_BARE",
+        "OGRN_LABELED",
+        "OGRN_BARE",
+        "INN_BARE",
+        "ACCOUNT_LABELED",
+        "ACCOUNT_BARE",
+        "CARD",
+        "PHONE",
+        "PASSPORT_BARE",
+        "POSTAL_CODE",
+        "DOB",
+        "IP_V4",
+        "IP_V6",
+        "PERSON",
+        "SECRET_HIGH_ENTROPY",
+    ]

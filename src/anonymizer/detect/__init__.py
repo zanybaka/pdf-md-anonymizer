@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from anonymizer.detect import regex_rules
+from anonymizer.detect import ner, regex_rules
 from anonymizer.replace import Span
 
 
@@ -55,16 +55,11 @@ def detect_all(text: str, options) -> list[Span]:
     regex_spans = _resolve(regex_rules.detect(text))
 
     ner_spans: list[Span] = []
-    try:
-        from anonymizer.detect import ner
-    except ImportError:
-        ner = None
-    if ner is not None:
-        for span in _resolve(ner.detect(text, options)):
-            if not _overlaps_any(span, regex_spans):
-                ner_spans.append(span)
+    for span in _resolve(ner.detect(text, options)):
+        if not _overlaps_any(span, regex_spans):
+            ner_spans.append(span)
 
     detected = regex_spans + ner_spans
-    if getattr(options, "consistency_sweep", True):
+    if options.consistency_sweep:
         detected = detected + _sweep(text, detected)
     return _resolve(detected)

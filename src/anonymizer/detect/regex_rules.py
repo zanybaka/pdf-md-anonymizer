@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
-from typing import Callable, NamedTuple
+from dataclasses import dataclass
+from typing import Callable
 
+from anonymizer.categories import Category
 from anonymizer.detect.dictionaries import load as _load_dict
 from anonymizer.replace import Span
 
@@ -14,8 +16,10 @@ ORG_ABBREVIATIONS = _load_dict("org_abbreviations")
 URL_TLDS = _load_dict("url_tlds")
 
 
-class Rule(NamedTuple):
-    category: str
+@dataclass(frozen=True)
+class Rule:
+    name: str
+    category: Category
     pattern: re.Pattern[str]
     group: int = 0
     validator: Callable[[str], bool] | None = None
@@ -133,88 +137,96 @@ _URL_TLD = "|".join(URL_TLDS)
 
 # Order matters: earlier rules win ties during overlap resolution.
 RULES: list[Rule] = [
-    Rule("EMAIL", re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")),
+    Rule("EMAIL", Category.EMAIL, re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")),
     # URL: a scheme URL, a "www." host, or a scheme-less bare domain anchored
     # on a known TLD (catches markdown link text like "[www.site.com/x](…)"
     # and a plain "unicum.ru", neither of which carries an "https://" prefix).
-    Rule("URL", re.compile(
+    Rule("URL", Category.URL, re.compile(
         r"https?://[^\s<>()\[\]«»]+"
         r"|www\.[^\s<>()\[\]«»]+"
         r"|\b(?:[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?\.)+(?:" + _URL_TLD + r")\b"
         r"(?:/[^\s<>()\[\]«»]*)?",
         re.IGNORECASE)),
-    Rule("SECRET", re.compile(
+    Rule("SECRET_PEM", Category.SECRET, re.compile(
         r"-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----", re.DOTALL)),
-    Rule("SECRET", re.compile(
+    Rule("SECRET_KEY_VALUE", Category.SECRET, re.compile(
         r"(?:password|passwd|pwd|api[_\-]?key|apikey|secret|token|access[_\-]?key)"
         r"\s*[=:]\s*(\S+)", re.IGNORECASE), group=1),
     # Certificate serial: a "№"-prefixed run of 20+ uppercase hex characters.
     # The high-entropy SECRET rule requires mixed case, so an all-caps hex
     # serial slips past it; the "№" anchor keeps this rule from over-matching.
-    Rule("SECRET", re.compile(r"№\s*([0-9A-F]{20,})\b"), group=1),
-    Rule("ORG", re.compile(_ORG_PATTERN, re.IGNORECASE)),
-    Rule("PASSPORT", re.compile(r"паспорт[:\s]*(\d{4}\s?\d{6})", re.IGNORECASE), group=1),
-    Rule("PASSPORT", re.compile(
+    Rule("SECRET_HEX_SERIAL", Category.SECRET, re.compile(r"№\s*([0-9A-F]{20,})\b"), group=1),
+    Rule("ORG", Category.ORG, re.compile(_ORG_PATTERN, re.IGNORECASE)),
+    Rule("PASSPORT_LABELED", Category.PASSPORT,
+         re.compile(r"паспорт[:\s]*(\d{4}\s?\d{6})", re.IGNORECASE), group=1),
+    Rule("PASSPORT_ISSUE_DATE", Category.PASSPORT, re.compile(
         r"(?:дата выдачи)[:\s]*(\d{2}[./]\d{2}[./]\d{4})", re.IGNORECASE), group=1),
-    Rule("PASSPORT", re.compile(
+    Rule("PASSPORT_DEPT_CODE", Category.PASSPORT, re.compile(
         r"код подразделения[:\s]*(\d{3}-\d{3})", re.IGNORECASE), group=1),
-    Rule("PASSPORT", re.compile(
+    Rule("PASSPORT_ISSUER", Category.PASSPORT, re.compile(
         r"(?:кем выдан|орган выдачи)[:\s]*([^\n]+)", re.IGNORECASE), group=1),
     # Label-anchored: requires a colon after the (optionally qualified) "адрес"
     # label, so plural "адреса средств …" is not mistaken for an address.
-    Rule("ADDRESS", re.compile(
+    Rule("ADDRESS_LABELED", Category.ADDRESS, re.compile(
         r"\bадрес\w*(?:\s+[А-Яа-яёЁ]+){0,2}\s*:\s*([^\n]+)",
         re.IGNORECASE), group=1),
-    Rule("ADDRESS", re.compile(
+    Rule("ADDRESS_INLINE", Category.ADDRESS, re.compile(
         r"\bг\.\s?[А-ЯЁ][^\n,]*(?:,\s*(?:ул|улица|пер|просп|пр-?кт|пр-?т|д|дом"
         r"|кв|корп|стр|оф)\.?\s?[^\n,]+)+", re.IGNORECASE)),
-    Rule("SNILS", re.compile(
+    Rule("SNILS_LABELED", Category.SNILS, re.compile(
         r"СНИЛС[:\s]*(\d{3}-\d{3}-\d{3}[\s\-]\d{2})", re.IGNORECASE),
         group=1, validator=_snils_ok),
-    Rule("SNILS", re.compile(r"(?<!\d)\d{3}-\d{3}-\d{3}[\s\-]\d{2}(?!\d)"),
+    Rule("SNILS_BARE", Category.SNILS,
+         re.compile(r"(?<!\d)\d{3}-\d{3}-\d{3}[\s\-]\d{2}(?!\d)"),
          validator=_snils_ok),
-    Rule("INN", re.compile(r"ИНН[:\s]*(\d{10}(?:\d{2})?)(?!\d)", re.IGNORECASE),
+    Rule("INN_LABELED", Category.INN,
+         re.compile(r"ИНН[:\s]*(\d{10}(?:\d{2})?)(?!\d)", re.IGNORECASE),
          group=1, validator=_inn_ok),
-    Rule("KPP", re.compile(r"КПП[:\s]*(\d{9})(?!\d)", re.IGNORECASE), group=1),
-    Rule("BIK", re.compile(r"БИК[:\s]*(\d{9})(?!\d)", re.IGNORECASE), group=1),
-    Rule("OGRNIP", re.compile(r"ОГРНИП[:\s]*(\d{15})(?!\d)", re.IGNORECASE),
+    Rule("KPP", Category.KPP, re.compile(r"КПП[:\s]*(\d{9})(?!\d)", re.IGNORECASE), group=1),
+    Rule("BIK", Category.BIK, re.compile(r"БИК[:\s]*(\d{9})(?!\d)", re.IGNORECASE), group=1),
+    Rule("OGRNIP_LABELED", Category.OGRNIP,
+         re.compile(r"ОГРНИП[:\s]*(\d{15})(?!\d)", re.IGNORECASE),
          group=1, validator=_ogrnip_ok),
-    Rule("OGRNIP", re.compile(r"(?<!\d)\d{15}(?!\d)"), validator=_ogrnip_ok),
-    Rule("OGRN", re.compile(r"ОГРН[:\s]*(\d{13})(?!\d)", re.IGNORECASE),
+    Rule("OGRNIP_BARE", Category.OGRNIP,
+         re.compile(r"(?<!\d)\d{15}(?!\d)"), validator=_ogrnip_ok),
+    Rule("OGRN_LABELED", Category.OGRN,
+         re.compile(r"ОГРН[:\s]*(\d{13})(?!\d)", re.IGNORECASE),
          group=1, validator=_ogrn_ok),
-    Rule("OGRN", re.compile(r"(?<!\d)\d{13}(?!\d)"), validator=_ogrn_ok),
+    Rule("OGRN_BARE", Category.OGRN,
+         re.compile(r"(?<!\d)\d{13}(?!\d)"), validator=_ogrn_ok),
     # Bare INN — a label-free 10- or 12-digit run, made safe only by the
     # checksum gate (DETECT-002). Ordered after the label-anchored INN and the
     # bare OGRN/OGRNIP rules so those win ties during overlap resolution. The
     # 13/15-digit OGRN/OGRNIP runs cannot match here: the `(?!\d)` boundary
     # rejects a 10/12-digit prefix of a longer digit run.
-    Rule("INN", re.compile(r"(?<!\d)(?:\d{12}|\d{10})(?!\d)"),
+    Rule("INN_BARE", Category.INN,
+         re.compile(r"(?<!\d)(?:\d{12}|\d{10})(?!\d)"),
          validator=_inn_ok),
-    Rule("ACCOUNT", re.compile(
+    Rule("ACCOUNT_LABELED", Category.ACCOUNT, re.compile(
         r"(?:расч[её]тный сч[её]т|р/сч|р/с|к/с|сч[её]т|сч\.)[:\s№N]*(\d{20})(?!\d)",
         re.IGNORECASE), group=1),
-    Rule("ACCOUNT", re.compile(r"(?<!\d)\d{20}(?!\d)")),
-    Rule("CARD", re.compile(
+    Rule("ACCOUNT_BARE", Category.ACCOUNT, re.compile(r"(?<!\d)\d{20}(?!\d)")),
+    Rule("CARD", Category.CARD, re.compile(
         r"(?<!\d)(?:\d{4}[\s\-]?){3}\d{4}(?!\d)"), validator=_luhn_ok),
-    Rule("PHONE", re.compile(
+    Rule("PHONE", Category.PHONE, re.compile(
         r"(?<!\d)(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}(?!\d)")),
-    Rule("PASSPORT", re.compile(r"(?<!\d)\d{4}\s\d{6}(?!\d)")),
-    Rule("POSTAL_CODE", re.compile(
+    Rule("PASSPORT_BARE", Category.PASSPORT, re.compile(r"(?<!\d)\d{4}\s\d{6}(?!\d)")),
+    Rule("POSTAL_CODE", Category.POSTAL_CODE, re.compile(
         r"(?:почтовый индекс|индекс)[:\s]*(\d{6})(?!\d)", re.IGNORECASE), group=1),
     # DOB is label-anchored only: a bare date carries no birth-date meaning, so
     # only dates next to "дата рождения" / "д.р." / "родился"/"родилась" are
     # tokenized. The date may be numeric (ДД.ММ.ГГГГ, ГГГГ-ММ-ДД) or written
     # with a Russian month name ("16 января 1983").
-    Rule("DOB", re.compile(
+    Rule("DOB", Category.DOB, re.compile(
         r"(?:дата рождения|д[./]р[.:]?|родил(?:ся|ась))[:\s]*"
         r"(\d{2}[./]\d{2}[./]\d{4}|\d{4}-\d{2}-\d{2}"
         r"|\d{1,2}\s+[а-яё]+\s+\d{4})",
         re.IGNORECASE), group=1),
-    Rule("IP", re.compile(
+    Rule("IP_V4", Category.IP, re.compile(
         r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")),
-    Rule("IP", re.compile(_IPV6, re.VERBOSE), group=1),
-    Rule("PERSON", re.compile(_PERSON_PATTERN, re.IGNORECASE)),
-    Rule("SECRET", re.compile(
+    Rule("IP_V6", Category.IP, re.compile(_IPV6, re.VERBOSE), group=1),
+    Rule("PERSON", Category.PERSON, re.compile(_PERSON_PATTERN, re.IGNORECASE)),
+    Rule("SECRET_HIGH_ENTROPY", Category.SECRET, re.compile(
         r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[a-z])"
         r"(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{24,}(?![A-Za-z0-9])")),
 ]
