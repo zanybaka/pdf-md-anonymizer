@@ -293,21 +293,21 @@ class AnonymizerApp(toga.App):
         done_title: str,
         done_body: str,
     ) -> None:
-        text = source()
-        if not text:
-            self._send_notification("Clipboard is empty", "No text found to anonymize")
-            return
-
         self._send_notification(busy_title, busy_body)
         self._begin_busy()
         try:
             loop = self.loop
             result_box: list[str | None] = [None]
             error_box: list[str | None] = [None]
+            empty_box: list[bool] = [False]
             done_event = asyncio.Event()
 
             def _work() -> None:
                 try:
+                    text = source()
+                    if not text:
+                        empty_box[0] = True
+                        return
                     from anonymizer.api import anonymize, Options  # noqa: PLC0415
                     result_box[0] = anonymize(text, Options()).text
                 except Exception as exc:  # noqa: BLE001
@@ -318,7 +318,9 @@ class AnonymizerApp(toga.App):
             threading.Thread(target=_work, daemon=True).start()
             await done_event.wait()
 
-            if error_box[0]:
+            if empty_box[0]:
+                self._send_notification("Clipboard is empty", "No text found to anonymize")
+            elif error_box[0]:
                 self._send_notification("Anonymization failed", error_box[0][:120])
             else:
                 self._copy_to_clipboard(result_box[0] or "")

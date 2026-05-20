@@ -37,16 +37,17 @@ def set_dock_visible(visible: bool) -> None:
 
 
 def activate_app(*, ignoring_other: bool = True) -> None:
-    """Bring the app to the foreground."""
+    """Bring the app to the foreground.
+
+    Uses the legacy ``activateIgnoringOtherApps_:`` API on purpose: the macOS 14+
+    ``activate()`` is policy-respecting and no-ops right after an Accessory →
+    Regular transition, which makes the first "Show Window" click fail to yank
+    focus.  The aggressive legacy form works on the first click.
+    """
     try:
         ObjCClass = _appkit()
         ns_app = ObjCClass("NSApplication").sharedApplication
-        try:
-            ns_app.activate()           # macOS 14+
-        except Exception:
-            ns_app.activateIgnoringOtherApps_(ignoring_other)
-    except AppKitError:
-        raise
+        ns_app.activateIgnoringOtherApps_(ignoring_other)
     except Exception as exc:
         raise AppKitError("activate_app failed") from exc
 
@@ -134,10 +135,11 @@ def pick_file(title: str, allowed_extensions: list[str]) -> Path | None:
         ObjCClass = _appkit()
         ns_app = ObjCClass("NSApplication").sharedApplication
 
-        try:
-            ns_app.activate()           # macOS 14+
-        except Exception:
-            ns_app.activateIgnoringOtherApps_(True)
+        # Use the legacy aggressive form for the same reason as activate_app(): the
+        # macOS 14+ activate() respects the previously frontmost app and no-ops
+        # right after an Accessory→Regular policy flip, which lands NSOpenPanel
+        # behind that other app on first menu-bar invocation.
+        ns_app.activateIgnoringOtherApps_(True)
 
         panel = ObjCClass("NSOpenPanel").openPanel()
         panel.title = title

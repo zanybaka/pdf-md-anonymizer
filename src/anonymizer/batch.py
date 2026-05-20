@@ -34,12 +34,12 @@ StageCallback = Callable[[Stage], None]
 BatchStageCallback = Callable[[int, int, Path, Stage], None]
 
 from anonymizer.api import Options, anonymize
-from anonymizer.convert import pdf_to_markdown
+from anonymizer.convert import ConversionCancelled, pdf_to_markdown
 from anonymizer.mapping import dumps_map
 
 
 class CancelToken:
-    """Cooperative cancellation flag checked between files."""
+    """Cooperative cancellation flag checked between files and between stages."""
 
     def __init__(self) -> None:
         self._cancelled = False
@@ -50,6 +50,10 @@ class CancelToken:
     @property
     def cancelled(self) -> bool:
         return self._cancelled
+
+
+class _Cancelled(Exception):
+    """Internal: raised by anonymize_file when cancel is set between stages."""
 
 
 @dataclass
@@ -68,13 +72,17 @@ def read_input(
     path: str | Path,
     pdf2md_cmd: str | None = None,
     on_stage: StageCallback | None = None,
+    cancel: CancelToken | None = None,
 ) -> str:
     """Read an input file as Markdown, converting ``.pdf`` via ``pdf2md``."""
     path = Path(path)
     if path.suffix.lower() == ".pdf":
         if on_stage is not None:
             on_stage(Stage.CONVERTING)
-        return pdf_to_markdown(path, pdf2md_cmd)
+        return pdf_to_markdown(
+            path, pdf2md_cmd,
+            cancel=(lambda: cancel.cancelled) if cancel is not None else None,
+        )
     return path.read_text(encoding="utf-8")
 
 
@@ -85,12 +93,19 @@ def anonymize_file(
     options: Options,
     pdf2md_cmd: str | None = None,
     on_stage: StageCallback | None = None,
+    cancel: CancelToken | None = None,
 ) -> None:
     """Anonymize one file, writing the anonymized text and optional map.
 
     ``on_stage`` is called with each stage name as it begins.
+    Raises ``_Cancelled`` if *cancel* is signalled during or between stages.
     """
-    text = read_input(input_path, pdf2md_cmd, on_stage)
+    try:
+        text = read_input(input_path, pdf2md_cmd, on_stage, cancel)
+    except ConversionCancelled:
+        raise _Cancelled()
+    if cancel is not None and cancel.cancelled:
+        raise _Cancelled()
     if on_stage is not None:
         on_stage(Stage.DETECTING)
     result = anonymize(text, options)
@@ -167,7 +182,10 @@ def process_files(
                 on_stage(_i, total, _p, stage)
         start = time.monotonic()
         try:
-            anonymize_file(input_path, out_path, map_path, options, pdf2md_cmd, file_stage)
+            anonymize_file(input_path, out_path, map_path, options, pdf2md_cmd, file_stage, cancel)
+        except _Cancelled:
+            yield FileResult(input_path, status=FileStatus.CANCELLED)
+            continue
         except Exception as exc:  # noqa: BLE001 - reported per file, batch continues
             yield FileResult(
                 input_path,

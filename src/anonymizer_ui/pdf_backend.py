@@ -317,7 +317,7 @@ def install_backend(
         "setuptools", _PDF_BACKEND_URL,
     ]
     runner.run(pip_args, on_line)
-    _patch_pdf2md_script(prefix)
+    _finalize_install(prefix, on_line)
 
 
 def update_backend(
@@ -333,7 +333,35 @@ def update_backend(
         "setuptools", _PDF_BACKEND_URL,
     ]
     runner.run(pip_args, on_line)
-    _patch_pdf2md_script(prefix)
+    _finalize_install(prefix, on_line)
+
+
+def _finalize_install(prefix: Path, on_line: Callable[[str], None] | None) -> None:
+    """Post-install cleanup + smoke-test-driven script patching.
+
+    Runs in this order:
+    1. Strip orphan ``lib/pythonX.Y/`` directories left behind by previous
+       installs against now-uninstalled Python versions (e.g. after a Homebrew
+       upgrade of ``python3``). Without this, every system-Python bump leaves
+       a stale empty subtree in the backend prefix forever.
+    2. Write the minimal ``sys.path.insert`` patch into ``pdf2md`` so it can
+       find the freshly installed packages.
+    3. Run a tiny in-process conversion smoke test. If it fails on the docling
+       MPS+float64 limitation, rewrite the script with the MPS-disable shim
+       added — otherwise leave the script clean so an upstream fix would
+       restore GPU acceleration automatically.
+    """
+    _clean_orphan_python_dirs(prefix, on_line)
+    _patch_pdf2md_script(prefix, with_mps_shim=False)
+    if on_line:
+        on_line("Verifying PDF conversion…")
+    ok, reason = _smoke_test(prefix)
+    if not ok:
+        if on_line:
+            on_line(f"Smoke test failed ({reason}); enabling CPU shim in pdf2md")
+        _patch_pdf2md_script(prefix, with_mps_shim=True)
+    elif on_line:
+        on_line("Smoke test passed; pdf2md left at default (GPU-enabled if available)")
 
 
 # ---------------------------------------------------------------------------
@@ -351,25 +379,42 @@ def update(on_line: Callable[[str], None] | None = None) -> None:
 
 
 def _find_site_packages(prefix: Path) -> Path | None:
-    """Return the site-packages directory under the install prefix, or None."""
+    """Return the site-packages directory under the install prefix, or None.
+
+    Prefers the directory that actually contains the ``pdf_to_markdown`` package
+    so an update that installs to a different Python version is handled correctly.
+    Falls back to the highest-version directory if none holds the package yet.
+    """
     lib = prefix / "lib"
     if not lib.is_dir():
         return None
-    for child in sorted(lib.iterdir(), reverse=True):
-        sp = child / "site-packages"
-        if sp.is_dir():
+    candidates = [
+        child / "site-packages"
+        for child in sorted(lib.iterdir(), reverse=True)
+        if (child / "site-packages").is_dir()
+    ]
+    for sp in candidates:
+        if any(sp.glob("pdf_to_markdown*")):
             return sp
-    return None
+    return candidates[0] if candidates else None
 
 
-def _patch_pdf2md_script(prefix: Path) -> None:
-    """Prepend ``sys.path.insert`` to ``pdf2md`` so it finds its packages.
+_PATCH_SENTINEL = "  # _pdf_md_anon"
 
-    ``pip install --prefix`` places packages in
-    ``<prefix>/lib/pythonX.Y/site-packages/`` but the script's shebang Python
-    does not add that directory to ``sys.path`` automatically.  Injecting a
-    single ``sys.path.insert`` line (just after the shebang) makes the script
-    self-contained when called as a subprocess.
+
+def _patch_pdf2md_script(prefix: Path, *, with_mps_shim: bool) -> None:
+    """Rewrite ``pdf2md``'s injected prelude.
+
+    Always injects a ``sys.path.insert`` so the shebang Python finds the
+    packages laid down by ``pip install --prefix``.  When *with_mps_shim* is
+    ``True`` also monkey-patches ``torch.backends.mps.is_available`` to
+    ``False`` — needed on Apple Silicon when the installed docling+torch
+    combination hits the MPS float64 limitation in the layout model.
+
+    Idempotent: all previously injected lines (identified by ``_PATCH_SENTINEL``,
+    plus the older non-sentinel ``sys.path.insert`` form) are stripped before
+    new ones are written, so re-running after an update does not accumulate
+    stale lines and the MPS shim can be toggled off on next run.
     """
     script = prefix / "bin" / "pdf2md"
     if not script.is_file():
@@ -379,7 +424,112 @@ def _patch_pdf2md_script(prefix: Path) -> None:
         return
     content = script.read_text(encoding="utf-8")
     lines = content.splitlines(keepends=True)
+    lines = [
+        ln for ln in lines
+        if not ln.rstrip("\n").endswith(_PATCH_SENTINEL)
+        and not ln.startswith("import sys; sys.path.insert(0, ")
+    ]
     insert_pos = 1 if lines and lines[0].startswith("#!") else 0
-    patch_line = f"import sys; sys.path.insert(0, {str(sp)!r})\n"
-    patched = "".join(lines[:insert_pos] + [patch_line] + lines[insert_pos:])
+    patch_lines = [
+        f"import sys; sys.path.insert(0, {str(sp)!r}){_PATCH_SENTINEL}\n",
+    ]
+    if with_mps_shim:
+        patch_lines.append(
+            f"import torch; torch.backends.mps.is_available = lambda: False{_PATCH_SENTINEL}\n"
+        )
+    patched = "".join(lines[:insert_pos] + patch_lines + lines[insert_pos:])
     script.write_text(patched, encoding="utf-8")
+
+
+def _clean_orphan_python_dirs(
+    prefix: Path, on_line: Callable[[str], None] | None
+) -> None:
+    """Delete ``lib/pythonX.Y/`` subtrees that do not hold ``pdf_to_markdown``.
+
+    ``pip install --prefix`` lays packages under ``lib/pythonX.Y/site-packages``
+    where ``X.Y`` is the running pip's Python.  When the system ``python3``
+    moves (e.g. Homebrew bumps ``3.12`` → ``3.14``) a subsequent install
+    creates a new subtree and leaves the old one orphaned forever.  This sweeps
+    those orphans, keying off the active site-packages found by
+    :func:`_find_site_packages`.
+    """
+    lib = prefix / "lib"
+    if not lib.is_dir():
+        return
+    active = _find_site_packages(prefix)
+    if active is None:
+        return
+    active_dir = active.parent
+    for child in lib.iterdir():
+        if child.is_dir() and child.resolve() != active_dir.resolve():
+            if on_line:
+                on_line(f"Removing orphan {child.name} from previous Python version")
+            shutil.rmtree(child, ignore_errors=True)
+
+
+def _minimal_pdf() -> bytes:
+    """Build a tiny well-formed single-page PDF in pure bytes.
+
+    Used only for the post-install smoke test, so generating it deterministically
+    in code keeps the repo free of binary fixtures and the byte offsets honest
+    no matter what Python writes the bytes.
+    """
+    body_objects = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
+        b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
+        b"<</Length 44>>\nstream\n"
+        b"BT /F1 12 Tf 100 700 Td (Hello World) Tj ET\nendstream",
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    ]
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for i, obj in enumerate(body_objects, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_offset = len(out)
+    n = len(body_objects) + 1
+    out += b"xref\n" + f"0 {n}\n".encode() + b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += b"trailer\n" + f"<</Size {n}/Root 1 0 R>>\n".encode()
+    out += b"startxref\n" + f"{xref_offset}\n".encode() + b"%%EOF\n"
+    return out
+
+
+def _smoke_test(prefix: Path) -> tuple[bool, str]:
+    """Run ``pdf2md`` on a tiny embedded PDF; return ``(ok, reason)``.
+
+    A 120-second timeout is generous enough for model load on first use yet
+    short enough that a hung subprocess does not freeze the Update flow.
+    The reason string is included in the result for surfacing to the user
+    (e.g. ``"MPS float64"`` vs ``"timeout"`` vs ``"exit 1"``).
+    """
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    script = prefix / "bin" / "pdf2md"
+    if not script.is_file():
+        return False, "pdf2md script missing"
+    pdf_path = Path(tempfile.mkstemp(suffix=".pdf")[1])
+    try:
+        pdf_path.write_bytes(_minimal_pdf())
+        try:
+            proc = subprocess.run(
+                [str(script), str(pdf_path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "timeout"
+        except OSError as exc:
+            return False, f"spawn failed: {exc}"
+        if proc.returncode == 0:
+            return True, "ok"
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:] or [""]
+        reason = "MPS float64" if "float64" in tail[0] and "MPS" in tail[0] else f"exit {proc.returncode}"
+        return False, reason
+    finally:
+        pdf_path.unlink(missing_ok=True)

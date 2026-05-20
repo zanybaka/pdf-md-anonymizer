@@ -7,10 +7,15 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 
 class ConversionError(RuntimeError):
     """Raised when PDF-to-Markdown conversion fails."""
+
+
+class ConversionCancelled(ConversionError):
+    """Raised when pdf conversion is interrupted by a cancel signal."""
 
 
 # A hyphenated word wrapped across a line by pdf2md: a word character, a
@@ -98,13 +103,19 @@ def default_pdf2md_command() -> str:
     return "pdf2md"
 
 
-def pdf_to_markdown(path: str | Path, command: str | None = None) -> str:
+def pdf_to_markdown(
+    path: str | Path,
+    command: str | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> str:
     """Convert a PDF file to Markdown by running the external ``pdf2md`` CLI.
 
     ``command`` overrides the executable name; when omitted the env-local
     ``pdf2md`` is preferred (see :func:`default_pdf2md_command`). A missing
     executable or a non-zero exit raises :class:`ConversionError` naming the
-    command.
+    command. If ``cancel`` is provided it is polled every 200 ms; when it
+    returns ``True`` the subprocess is killed and :class:`ConversionCancelled`
+    is raised.
     """
     if command is None:
         command = default_pdf2md_command()
@@ -113,13 +124,31 @@ def pdf_to_markdown(path: str | Path, command: str | None = None) -> str:
             f"pdf2md executable not found: {command!r} (install it or pass --pdf2md-cmd)"
         )
     try:
-        proc = subprocess.run(
-            [command, str(path)], capture_output=True, text=True, check=False
+        proc = subprocess.Popen(
+            [command, str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
+    except OSError as exc:
+        raise ConversionError(f"failed to run {command!r}: {exc}") from exc
+    stdout = stderr = ""
+    try:
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel is not None and cancel():
+                    proc.kill()
+                    proc.communicate()
+                    raise ConversionCancelled(f"{command!r} cancelled for {Path(path).name}")
+    except ConversionCancelled:
+        raise
     except OSError as exc:
         raise ConversionError(f"failed to run {command!r}: {exc}") from exc
     if proc.returncode != 0:
         raise ConversionError(
             f"{command!r} exited with code {proc.returncode} for {Path(path).name}"
         )
-    return normalize_hyphen_spacing(rejoin_hyphenated_linebreaks(proc.stdout))
+    return normalize_hyphen_spacing(rejoin_hyphenated_linebreaks(stdout))

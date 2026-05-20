@@ -4,6 +4,49 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- File open dialog could appear behind another frontmost app on first menu-bar
+  invocation: `appkit_bridge.pick_file` was using the same `ns_app.activate()`
+  (macOS 14+) → `activateIgnoringOtherApps_` fallback chain that caused the
+  "Show Window" two-click bug. Right after the Accessory → Regular activation
+  policy flip, `activate()` no-ops and the NSOpenPanel lands behind whichever
+  app was previously frontmost. Switched to the legacy aggressive form to match
+  the fix in `activate_app`.
+- "Anonymize File" felt dead for tens of seconds before showing the start alert
+  on PDF input: `_anonymize_in_thread` was calling `source()` (which for the PDF
+  path is `read_input(path)` → `pdf2md` subprocess, 30–90 s) on the UI thread
+  **before** firing the "Anonymizing…" notification and starting the busy icon.
+  Moved `source()` inside the worker thread so the notification and busy icon
+  fire immediately on click; added a regression test
+  (`test_anonymize_in_thread_notifies_before_slow_source`) that asserts the
+  notification and `_begin_busy` precede the `source()` call.
+- "Show Window" required two clicks: `appkit_bridge.activate_app()` was using the
+  macOS 14+ `NSApplication.activate()` API which respects the currently frontmost
+  app and silently no-ops right after an Accessory → Regular activation-policy
+  transition. The first click changed policy but did not yank focus; the second
+  click then worked because the app was already Regular. Reverted to the legacy
+  `activateIgnoringOtherApps_(True)` (the same call the pre-refactor code used),
+  which works on the first click.
+- Cancel during PDF conversion: `pdf_to_markdown()` now accepts a `cancel: Callable[[], bool]`
+  parameter. Internally it uses `Popen` + `communicate(timeout=0.2)` polling; when
+  `cancel()` returns `True` the subprocess is killed and `ConversionCancelled` is raised.
+  `read_input()` and `anonymize_file()` thread the `CancelToken` down to the subprocess,
+  so Cancel now interrupts an in-progress PDF conversion within ~200 ms instead of only
+  taking effect between files.
+- PDF backend after Update: install / update now run a post-install
+  `_finalize_install()` that (a) sweeps orphan `lib/pythonX.Y/` subtrees left by
+  previous installs against now-uninstalled Python versions (e.g. after a Homebrew
+  bump of `python3`), (b) writes the minimal `sys.path.insert` patch into `pdf2md`,
+  (c) runs a smoke conversion on a tiny in-code-generated PDF, and (d) only if that
+  smoke test fails on the docling MPS+float64 limitation does it rewrite the script
+  with `torch.backends.mps.is_available = lambda: False`. When upstream docling fixes
+  the float64 use, the next Update's smoke test passes and the shim is left out
+  automatically — restoring GPU acceleration without a code change. `_patch_pdf2md_script()`
+  is now parameterised (`with_mps_shim`) and fully idempotent (sentinel-tagged lines plus
+  the older non-sentinel `sys.path.insert` form are both stripped before re-injection).
+  `_find_site_packages()` prefers the directory that contains `pdf_to_markdown*` files
+  so an update that installs to a different Python version subdirectory picks the right path.
+
 ### Added
 - CLI-003: replaced the `sys.argv` rewrite in `cli.main()` with an argparse-native
   routing strategy. Subcommand names are now derived from the parser itself via

@@ -77,15 +77,61 @@ def test_pdf_backend_patch_injects_sys_path(tmp_path, monkeypatch):
     script.write_text("#!/usr/bin/python3\nfrom pdf2md import main\nmain()\n")
 
     monkeypatch.setattr(pdf_backend, "backend_dir", lambda: tmp_path)
-    pdf_backend._patch_pdf2md_script(tmp_path)
+    pdf_backend._patch_pdf2md_script(tmp_path, with_mps_shim=False)
 
     patched = script.read_text()
     lines = patched.splitlines()
     assert lines[0].startswith("#!")
     assert "sys.path.insert" in lines[1]
     assert str(sp) in lines[1]
+    # MPS shim must be absent when not requested
+    assert not any("torch.backends.mps" in l for l in lines)
     # Original entry-point line is still present
     assert any("from pdf2md import main" in l for l in lines)
+
+    # Re-patch with shim → second sentinel line added, no accumulation
+    pdf_backend._patch_pdf2md_script(tmp_path, with_mps_shim=True)
+    lines = script.read_text().splitlines()
+    sentinel_lines = [l for l in lines if l.endswith(pdf_backend._PATCH_SENTINEL)]
+    assert len(sentinel_lines) == 2
+    assert any("torch.backends.mps.is_available" in l for l in sentinel_lines)
+
+    # Toggle back off → shim removed, path patch kept
+    pdf_backend._patch_pdf2md_script(tmp_path, with_mps_shim=False)
+    lines = script.read_text().splitlines()
+    sentinel_lines = [l for l in lines if l.endswith(pdf_backend._PATCH_SENTINEL)]
+    assert len(sentinel_lines) == 1
+    assert "sys.path.insert" in sentinel_lines[0]
+
+
+def test_pdf_backend_clean_orphan_python_dirs(tmp_path):
+    """Orphan lib/pythonX.Y dirs without pdf_to_markdown are swept; active stays."""
+    from anonymizer_ui import pdf_backend
+
+    active = tmp_path / "lib" / "python3.14" / "site-packages"
+    active.mkdir(parents=True)
+    (active / "pdf_to_markdown").mkdir()
+    orphan = tmp_path / "lib" / "python3.12" / "site-packages"
+    orphan.mkdir(parents=True)
+    (orphan / "stale_marker").write_text("")
+    messages: list[str] = []
+
+    pdf_backend._clean_orphan_python_dirs(tmp_path, messages.append)
+
+    assert active.exists()
+    assert not (tmp_path / "lib" / "python3.12").exists()
+    assert any("python3.12" in m for m in messages)
+
+
+def test_minimal_pdf_is_parseable_by_pypdfium2():
+    """The smoke-test PDF must parse with the same library docling uses."""
+    pytest = __import__("pytest")
+    pypdfium2 = pytest.importorskip("pypdfium2")
+    from anonymizer_ui import pdf_backend
+
+    pdf_bytes = pdf_backend._minimal_pdf()
+    doc = pypdfium2.PdfDocument(pdf_bytes)
+    assert len(doc) == 1
 
 
 def test_pdf_backend_find_pip_wheel():
@@ -527,7 +573,10 @@ def test_anon_clipboard_to_clipboard_empty_sends_notification():
 
     async def _run() -> None:
         obj = types.SimpleNamespace(
+            loop=asyncio.get_event_loop(),
             _send_notification=lambda title, body: notifs.append((title, body)),
+            _begin_busy=lambda: None,
+            _end_busy=lambda: None,
         )
         await AnonymizerApp._anonymize_in_thread(
             obj,
@@ -541,9 +590,54 @@ def test_anon_clipboard_to_clipboard_empty_sends_notification():
     asyncio.run(_run())
 
     assert not written, "nothing should be written when source is empty"
-    assert notifs
-    combined = " ".join(notifs[0]).lower()
-    assert "empty" in combined
+    assert any("empty" in " ".join(n).lower() for n in notifs)
+
+
+def test_anonymize_in_thread_notifies_before_slow_source():
+    """Regression: notification and busy must fire BEFORE a slow source() runs.
+
+    The original bug: source() (PDF conversion, tens of seconds) was called on the
+    UI thread before _send_notification/_begin_busy, so the user clicked
+    "Anonymize" and saw nothing for ~a minute before the alert arrived.
+    """
+    import asyncio
+    import threading
+    import time
+    import types
+    from anonymizer_ui.app import AnonymizerApp
+
+    events: list[str] = []
+    source_started = threading.Event()
+
+    def slow_source() -> str:
+        events.append("source_start")
+        source_started.set()
+        time.sleep(0.1)
+        events.append("source_end")
+        return "Контакт: x@y.com"
+
+    async def _run() -> None:
+        obj = types.SimpleNamespace(
+            loop=asyncio.get_event_loop(),
+            _copy_to_clipboard=lambda t: None,
+            _send_notification=lambda title, body: events.append(f"notify:{title}"),
+            _begin_busy=lambda: events.append("begin_busy"),
+            _end_busy=lambda: events.append("end_busy"),
+        )
+        await AnonymizerApp._anonymize_in_thread(
+            obj, source=slow_source,
+            busy_title="Anonymizing…", busy_body="x",
+            done_title="Done", done_body="x",
+        )
+
+    asyncio.run(_run())
+
+    # notification and begin_busy must precede source_start
+    busy_idx = events.index("begin_busy")
+    notify_idx = events.index("notify:Anonymizing…")
+    src_idx = events.index("source_start")
+    assert notify_idx < src_idx, f"notify must precede source(): {events}"
+    assert busy_idx < src_idx, f"begin_busy must precede source(): {events}"
 
 
 def test_status_bar_has_two_clipboard_commands():
