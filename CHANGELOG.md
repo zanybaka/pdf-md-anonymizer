@@ -4,7 +4,29 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+- pdf-backend pip runner unified to a single `SubprocessPipRunner`. The in-process
+  variant (`InProcessPipRunner`, `_find_pip_wheel`, `_LineWriter`) was dead defensive
+  code: in `.app` we already used the subprocess runner with the system python, and
+  in a dev venv the bundled-wheel `sys.path` injection was redundant because pip is
+  importable from the venv anyway. The remaining runner binds to
+  `_find_build_python() or sys.executable`, keeping the same behaviour for both
+  deployment modes while removing ~60 lines and the side effects of importing
+  `pip._internal` into our own process.
+
 ### Fixed
+- `_find_site_packages` could pick a stale `lib/pythonX.Y/site-packages/` from a
+  previous install when several Python-version subtrees coexisted (e.g. an old
+  `.app` install put packages under `python3.14` and a later dev-venv install
+  put them under `python3.12`). The old name-sort heuristic returned the
+  highest-version one even though pip had freshly installed to the lower
+  version dir matching its actual Python.  Consequence:
+  `_clean_orphan_python_dirs` then deleted the FRESH install (treating it as
+  orphan) and `_patch_pdf2md_script` pointed `sys.path` at the stale tree —
+  the shebang Python then tried to load a `.so` built for a different CPython
+  ABI and the smoke test failed with `ModuleNotFoundError: pydantic_core._pydantic_core`.
+  Now `_find_site_packages` queries the shebang of `bin/pdf2md` (the Python pip
+  actually used) for its `python{X}.{Y}` tag and returns the matching subtree.
 - File open dialog could appear behind another frontmost app on first menu-bar
   invocation: `appkit_bridge.pick_file` was using the same `ns_app.activate()`
   (macOS 14+) → `activateIgnoringOtherApps_` fallback chain that caused the

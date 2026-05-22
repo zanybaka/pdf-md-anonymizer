@@ -70,12 +70,9 @@
     {
       "label": "Briefcase: run macOS app",
       "type": "shell",
-      "command": "uvx briefcase run macOS",
-      "options": {
-        "env": { "PIP_FIND_LINKS": "${workspaceFolder}/wheelhouse" }
-      },
+      "command": "\"$HOME/.briefcase-out/pdf-md-anonymizer/build/anonymizer-ui/macos/app/PDF-MD Anonymizer.app/Contents/MacOS/PDF-MD Anonymizer\"",
       "problemMatcher": [],
-      "detail": "Launch pdf-md-anonymizer.app. Briefcase auto-runs steps 1-2 first if the bundle is missing or stale, so this works standalone."
+      "detail": "Launch the built .app directly. We bypass `uvx briefcase run macOS` because it fails on this repo: the `build/` symlink (iCloud workaround, see step 0 prep) means `open -n` resolves to `~/.briefcase-out/...`, but briefcase searches for a process whose cmdline starts with the symlinked path — paths never match, `app_pid is None`, and briefcase exits with code 200 even though the .app is running. Launching the Mach-O binary directly bonds the terminal to the app: Python stderr (tracebacks, our `_log` lines) streams to this terminal, and Ctrl-C kills the app. Run step 2 (build) first."
     }
   ]
 }

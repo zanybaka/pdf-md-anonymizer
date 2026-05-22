@@ -7,20 +7,15 @@ installs the backend on demand into
 
 Install strategy
 ----------------
-:func:`install` and :func:`update` both run ``pip install --prefix <dir>``.
-:func:`install` installs from the git reference; :func:`update` adds
-``--upgrade`` to pull the latest revision.
+:func:`install` and :func:`update` both run ``pip install --prefix <dir>`` via
+:class:`SubprocessPipRunner` — pip is always invoked as an external subprocess
+of a real Python interpreter so build isolation, ``sys.path``, and pip's own
+plugin loading stay out of our process.
 
 Inside a Briefcase ``.app``, ``sys.executable`` is the Cocoa launcher and
-cannot be used as a Python interpreter.  ``pdf-to-markdown`` is built from
-source (no PyPI wheel), so pip needs a real Python for build isolation.
-:func:`_find_build_python` locates a system ``python3`` outside the bundle and
-:class:`SubprocessPipRunner` runs pip as an **external subprocess** using that
-interpreter — the entire pip session (including build isolation) runs in one
-consistent Python version with no conflicts.
-
-In a dev venv ``sys.executable`` is already a real interpreter, so pip is
-called in-process (loaded from ``ensurepip``'s bundled wheel) for speed.
+cannot be used as a Python interpreter.  :func:`_find_build_python` locates a
+system ``python3`` outside the bundle.  In a dev venv ``sys.executable`` is
+already a real interpreter and is used directly.
 
 A system Python (Homebrew or Xcode CLT) is required for install/update inside
 the ``.app``.  After install all PDF conversions run fully offline.
@@ -28,7 +23,6 @@ the ``.app``.  After install all PDF conversions run fully offline.
 
 from __future__ import annotations
 
-import contextlib
 import shutil
 import sys
 from collections.abc import Callable
@@ -163,46 +157,6 @@ def _python_version_ok(python: str) -> bool:
         return False
 
 
-def _find_pip_wheel() -> str:
-    """Return the path to the pip wheel bundled inside ``ensurepip``."""
-    import ensurepip  # noqa: PLC0415
-
-    bundled = Path(ensurepip.__file__).parent / "_bundled"
-    wheels = sorted(bundled.glob("pip-*.whl"))
-    if not wheels:
-        raise RuntimeError(
-            "No pip wheel found in ensurepip._bundled. "
-            "This Python installation does not include ensurepip."
-        )
-    return str(wheels[-1])
-
-
-class _LineWriter:
-    """Write-only file-like object that forwards complete lines to a callback."""
-
-    def __init__(self, callback: Callable[[str], None]) -> None:
-        self._cb = callback
-        self._buf = ""
-
-    def write(self, text: str) -> int:
-        self._buf += text
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            self._cb(line)
-        return len(text)
-
-    def flush(self) -> None:
-        if self._buf:
-            self._cb(self._buf)
-            self._buf = ""
-
-    def isatty(self) -> bool:
-        return False
-
-    def fileno(self) -> int:
-        raise OSError("_LineWriter has no fileno")
-
-
 def resolve_cert() -> Path | None:
     """Return a CA bundle path for pip SSL verification, or ``None``."""
     system_cert = Path("/etc/ssl/cert.pem")
@@ -221,7 +175,7 @@ def _ssl_cert_args() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# PipRunner protocol and implementations
+# PipRunner protocol and implementation
 # ---------------------------------------------------------------------------
 
 @runtime_checkable
@@ -231,37 +185,15 @@ class PipRunner(Protocol):
     ) -> None: ...
 
 
-class InProcessPipRunner:
-    """Runs pip in-process using the ensurepip bundled wheel."""
-
-    def __init__(self) -> None:
-        self._path_patched = False
-
-    def run(
-        self, args: list[str], on_line: Callable[[str], None] | None = None
-    ) -> None:
-        if not self._path_patched:
-            pip_wheel = _find_pip_wheel()
-            if pip_wheel not in sys.path:
-                sys.path.insert(0, pip_wheel)
-            self._path_patched = True
-
-        from pip._internal.cli.main import main as _pip_main  # noqa: PLC0415
-
-        full_args = args + _ssl_cert_args()
-        if on_line:
-            writer = _LineWriter(on_line)
-            with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
-                exit_code = _pip_main(full_args)
-            writer.flush()
-        else:
-            exit_code = _pip_main(full_args)
-        if exit_code != 0:
-            raise RuntimeError(f"pip exited with code {exit_code}")
-
-
 class SubprocessPipRunner:
-    """Runs pip as an external subprocess via a given Python interpreter."""
+    """Run pip as an external subprocess via a given Python interpreter.
+
+    The same shape works for both deployment modes: inside the Briefcase
+    ``.app`` we hand it the system ``python3`` found by
+    :func:`_find_build_python`; in a dev venv we hand it ``sys.executable``.
+    No in-process pip — keeps our process free of pip's import side effects
+    (``sys.path``, ``pip._internal`` cache, plugin loading).
+    """
 
     def __init__(self, python_path: str) -> None:
         self._python = python_path
@@ -287,17 +219,20 @@ class SubprocessPipRunner:
             raise RuntimeError(f"pip exited with code {proc.returncode}")
 
 
-def _make_runner() -> InProcessPipRunner | SubprocessPipRunner:
-    """Return the appropriate pip runner for this environment."""
+def _make_runner() -> SubprocessPipRunner:
+    """Return a SubprocessPipRunner bound to the right Python for this env.
+
+    Inside a Briefcase ``.app`` we need a real system Python (the Cocoa
+    launcher in ``sys.executable`` cannot run pip).  Outside the bundle
+    ``sys.executable`` is a real venv interpreter and is used directly.
+    """
     build_python = _find_build_python()
     if build_python is None and ".app/Contents/MacOS/" in sys.executable:
         raise RuntimeError(
             "No Python 3 interpreter found outside the app bundle. "
             "Install Python via Homebrew (brew install python3) or https://python.org."
         )
-    if build_python:
-        return SubprocessPipRunner(build_python)
-    return InProcessPipRunner()
+    return SubprocessPipRunner(build_python or sys.executable)
 
 
 # ---------------------------------------------------------------------------
@@ -381,13 +316,34 @@ def update(on_line: Callable[[str], None] | None = None) -> None:
 def _find_site_packages(prefix: Path) -> Path | None:
     """Return the site-packages directory under the install prefix, or None.
 
-    Prefers the directory that actually contains the ``pdf_to_markdown`` package
-    so an update that installs to a different Python version is handled correctly.
-    Falls back to the highest-version directory if none holds the package yet.
+    Uses ``bin/pdf2md``'s shebang (the Python that pip used to install) as the
+    source of truth: pip with ``--prefix`` lays packages under
+    ``lib/pythonX.Y/site-packages`` where X.Y matches the running pip.  Querying
+    the shebang Python for its ``sys.version_info`` gives the exact directory,
+    even when several ``lib/pythonX.Y/`` subtrees coexist after a Python-version
+    bump (the stale ones might still hold a copy of the package and would beat
+    the fresh dir under a naive name-sort).
+
+    Falls back to "any site-packages holding ``pdf_to_markdown``" → "highest
+    version" only when the script is absent or its shebang Python is missing,
+    so pre-install and ``installed_version`` checks still work.
     """
     lib = prefix / "lib"
     if not lib.is_dir():
         return None
+    script = prefix / "bin" / "pdf2md"
+    if script.is_file():
+        try:
+            first_line = script.read_text(encoding="utf-8").splitlines()[0]
+        except OSError:
+            first_line = ""
+        if first_line.startswith("#!"):
+            shebang_py = first_line[2:].strip()
+            tag = _python_lib_tag(shebang_py)
+            if tag is not None:
+                sp = lib / tag / "site-packages"
+                if sp.is_dir():
+                    return sp
     candidates = [
         child / "site-packages"
         for child in sorted(lib.iterdir(), reverse=True)
@@ -397,6 +353,23 @@ def _find_site_packages(prefix: Path) -> Path | None:
         if any(sp.glob("pdf_to_markdown*")):
             return sp
     return candidates[0] if candidates else None
+
+
+def _python_lib_tag(python_path: str) -> str | None:
+    """Return ``"pythonX.Y"`` for *python_path*, or ``None`` if unavailable."""
+    if not python_path or not Path(python_path).is_file():
+        return None
+    import subprocess  # noqa: PLC0415
+    try:
+        out = subprocess.check_output(
+            [python_path, "-c",
+             "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')"],
+            timeout=5,
+            text=True,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out or None
 
 
 _PATCH_SENTINEL = "  # _pdf_md_anon"

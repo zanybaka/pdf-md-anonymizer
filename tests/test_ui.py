@@ -104,6 +104,46 @@ def test_pdf_backend_patch_injects_sys_path(tmp_path, monkeypatch):
     assert "sys.path.insert" in sentinel_lines[0]
 
 
+def test_clean_orphan_keeps_fresh_dir_when_shebang_points_to_lower_version(tmp_path, monkeypatch):
+    """Regression: fresh install dir (e.g. python3.12) must survive cleanup
+    even when a stale higher-version dir (python3.14) still holds packages.
+
+    The old name-sort heuristic in _find_site_packages picked python3.14
+    (stale, from a previous .app install) and let _clean delete python3.12
+    (the freshly installed one), leaving the script pointing at the wrong
+    Python's .so files. New code reads bin/pdf2md's shebang.
+    """
+    from anonymizer_ui import pdf_backend
+
+    # Two coexisting site-packages; both hold pdf_to_markdown (the stale dir
+    # was an old install that wasn't cleaned at its own time).
+    fresh = tmp_path / "lib" / "python3.12" / "site-packages"
+    fresh.mkdir(parents=True)
+    (fresh / "pdf_to_markdown").mkdir()
+    (fresh / "_fresh_marker").write_text("")
+    stale = tmp_path / "lib" / "python3.14" / "site-packages"
+    stale.mkdir(parents=True)
+    (stale / "pdf_to_markdown").mkdir()
+    (stale / "_stale_marker").write_text("")
+
+    # Script's shebang names a fake python; we stub the version probe.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_python = tmp_path / "fake-python3"
+    fake_python.write_text("#!/bin/sh\necho 0\n")
+    fake_python.chmod(0o755)
+    (bin_dir / "pdf2md").write_text(f"#!{fake_python}\nimport sys\n")
+    monkeypatch.setattr(
+        pdf_backend, "_python_lib_tag",
+        lambda p: "python3.12" if str(p) == str(fake_python) else None,
+    )
+
+    pdf_backend._clean_orphan_python_dirs(tmp_path, lambda m: None)
+
+    assert fresh.exists(), "fresh python3.12 install must survive"
+    assert not stale.parent.exists(), "stale python3.14 must be removed"
+
+
 def test_pdf_backend_clean_orphan_python_dirs(tmp_path):
     """Orphan lib/pythonX.Y dirs without pdf_to_markdown are swept; active stays."""
     from anonymizer_ui import pdf_backend
@@ -134,91 +174,71 @@ def test_minimal_pdf_is_parseable_by_pypdfium2():
     assert len(doc) == 1
 
 
-def test_pdf_backend_find_pip_wheel():
-    """_find_pip_wheel returns a path to a .whl file that exists."""
-    from anonymizer_ui import pdf_backend
-    from pathlib import Path
-
-    wheel = pdf_backend._find_pip_wheel()
-    assert Path(wheel).exists()
-    assert wheel.endswith(".whl")
-
-
-def test_pdf_backend_line_writer():
-    """_LineWriter forwards complete lines to the callback and satisfies pip's file interface."""
-    from anonymizer_ui import pdf_backend
-
-    received = []
-    w = pdf_backend._LineWriter(received.append)
-    w.write("hello\nworld\n")
-    assert received == ["hello", "world"]
-    w.write("partial")
-    assert received == ["hello", "world"]
-    w.flush()
-    assert received == ["hello", "world", "partial"]
-    assert w.isatty() is False
-
-
-
-def test_in_process_pip_runner_exit_code_to_error(monkeypatch, tmp_path):
-    """InProcessPipRunner.run raises RuntimeError when pip exits non-zero."""
-    import sys
-    import types
+def test_subprocess_pip_runner_exit_code_to_error(monkeypatch):
+    """SubprocessPipRunner.run raises RuntimeError when pip exits non-zero."""
     import pytest
     from anonymizer_ui import pdf_backend
 
-    # Provide a fake pip wheel so the path-insert step doesn't touch real pip
-    fake_wheel = str(tmp_path / "pip-24.0-fake.whl")
-    (tmp_path / "pip-24.0-fake.whl").touch()
-    monkeypatch.setattr(pdf_backend, "_find_pip_wheel", lambda: fake_wheel)
+    class _FakeProc:
+        def __init__(self, lines: list[str], rc: int) -> None:
+            self.stdout = iter(lines)
+            self.returncode = rc
 
-    calls: list[list[str]] = []
+        def wait(self) -> None:
+            pass
 
-    def _fake_pip_main(args: list[str]) -> int:
-        calls.append(args)
-        return 2  # non-zero exit → RuntimeError
+    import subprocess as _sub
 
-    # Inject the fake via sys.modules so the lazy import inside run() picks it up
-    fake_main_mod = types.SimpleNamespace(main=_fake_pip_main)
-    fake_cli_mod = types.SimpleNamespace(main=fake_main_mod)
-    fake_internal = types.SimpleNamespace(cli=fake_cli_mod)
-    monkeypatch.setitem(sys.modules, "pip._internal", fake_internal)
-    monkeypatch.setitem(sys.modules, "pip._internal.cli", fake_cli_mod)
-    monkeypatch.setitem(sys.modules, "pip._internal.cli.main", fake_main_mod)
+    def _fake_popen(cmd, **kw):
+        assert "-m" in cmd and "pip" in cmd
+        return _FakeProc(["Collecting foo\n", "ERROR: bang\n"], 2)
 
-    runner = pdf_backend.InProcessPipRunner()
+    monkeypatch.setattr(_sub, "Popen", _fake_popen)
+
+    lines: list[str] = []
+    runner = pdf_backend.SubprocessPipRunner("/usr/bin/python3")
     with pytest.raises(RuntimeError, match="pip exited with code 2"):
-        runner.run(["install", "some-package"])
-    assert calls  # pip was actually called
+        runner.run(["install", "foo"], on_line=lines.append)
+    assert any("Collecting foo" in l for l in lines)
 
 
-def test_in_process_pip_runner_path_insert_once(monkeypatch, tmp_path):
-    """sys.path.insert happens at most once per InProcessPipRunner instance."""
+def test_make_runner_uses_sys_executable_in_dev(monkeypatch):
+    """Outside a .app bundle, _make_runner binds to sys.executable."""
     import sys
-    import types
     from anonymizer_ui import pdf_backend
 
-    fake_wheel = str(tmp_path / "pip-24.0-fake.whl")
-    (tmp_path / "pip-24.0-fake.whl").touch()
-    monkeypatch.setattr(pdf_backend, "_find_pip_wheel", lambda: fake_wheel)
-    # Ensure fake_wheel is not already on sys.path
-    if fake_wheel in sys.path:
-        sys.path.remove(fake_wheel)
+    monkeypatch.setattr(sys, "executable", "/Users/dev/.venvs/anon/bin/python")
+    monkeypatch.setattr(pdf_backend, "_find_build_python", lambda: None)
+    runner = pdf_backend._make_runner()
+    assert isinstance(runner, pdf_backend.SubprocessPipRunner)
+    assert runner._python == "/Users/dev/.venvs/anon/bin/python"
 
-    fake_main_mod = types.SimpleNamespace(main=lambda args: 0)
-    fake_cli_mod = types.SimpleNamespace(main=fake_main_mod)
-    fake_internal = types.SimpleNamespace(cli=fake_cli_mod)
-    monkeypatch.setitem(sys.modules, "pip._internal", fake_internal)
-    monkeypatch.setitem(sys.modules, "pip._internal.cli", fake_cli_mod)
-    monkeypatch.setitem(sys.modules, "pip._internal.cli.main", fake_main_mod)
 
-    runner = pdf_backend.InProcessPipRunner()
-    runner.run(["install", "foo"])
-    runner.run(["install", "bar"])
+def test_make_runner_uses_build_python_in_app(monkeypatch):
+    """Inside a .app bundle, _make_runner binds to the located system python."""
+    import sys
+    from anonymizer_ui import pdf_backend
 
-    count = sys.path.count(fake_wheel)
-    assert count == 1, f"expected 1 insertion, found {count}"
-    sys.path.remove(fake_wheel)  # cleanup
+    monkeypatch.setattr(sys, "executable",
+                        "/Applications/Foo.app/Contents/MacOS/Foo")
+    monkeypatch.setattr(pdf_backend, "_find_build_python",
+                        lambda: "/opt/homebrew/bin/python3")
+    runner = pdf_backend._make_runner()
+    assert isinstance(runner, pdf_backend.SubprocessPipRunner)
+    assert runner._python == "/opt/homebrew/bin/python3"
+
+
+def test_make_runner_raises_inside_app_without_system_python(monkeypatch):
+    """In a .app bundle with no system python, _make_runner raises clearly."""
+    import sys
+    import pytest
+    from anonymizer_ui import pdf_backend
+
+    monkeypatch.setattr(sys, "executable",
+                        "/Applications/Foo.app/Contents/MacOS/Foo")
+    monkeypatch.setattr(pdf_backend, "_find_build_python", lambda: None)
+    with pytest.raises(RuntimeError, match="No Python 3 interpreter"):
+        pdf_backend._make_runner()
 
 
 def test_pdf_backend_installed_version_absent(tmp_path, monkeypatch):
