@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- `NerPipeline.detect` now recovers PERSON (and ORG/LOC) spans that Natasha's CRF
+  model silently drops when the immediately surrounding lines provide a confusing
+  token sequence (observed: a bare `/` on the line after a name, or a navigation
+  word like `Аватар` on the line before it). The fix adds a per-line fallback pass:
+  after the full-document NER run, `_detect_inner` is also called for each individual
+  line and any non-overlapping spans are added to the result with adjusted offsets.
+  Skill-section suppression is re-applied post-hoc using full-document ranges so
+  ORG/LOC entities inside skills sections are not incorrectly resurrected.
+  Trade-off: ~2× NER inference time on the total text; not a concern for clipboard
+  or typical résumé lengths.
+
 ### Changed
 - pdf-backend pip runner unified to a single `SubprocessPipRunner`. The in-process
   variant (`InProcessPipRunner`, `_find_pip_wheel`, `_LineWriter`) was dead defensive

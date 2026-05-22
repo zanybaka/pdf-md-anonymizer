@@ -203,19 +203,8 @@ class NerPipeline:
             self._stoplist_keys = frozenset(self.lemma_key(t) for t in _STOPLIST_TERMS)
         return self._stoplist_keys
 
-    def detect(self, text: str, options) -> list[Span]:
-        """Detect PERSON, ORG, and LOC spans with Natasha.
-
-        PERSON is always tokenized; ORG/LOC are suppressed by ``ner_org=False`` /
-        ``ner_loc=False`` on ``options``. NER runs over a case-normalized copy (see
-        ``_normalize_caps``) so ALL-CAPS entities are tagged; because that rewrite
-        is length-preserving, each span's offsets index the original text and its
-        value is sliced from the original (un-normalized) ``text``. Each span is
-        trimmed (clipped at the first newline, edge whitespace/markdown stripped)
-        and dropped when its value reduces to a known non-sensitive lemma key.
-        Adjacent same-category spans bridged only by a spaced hyphen are then
-        merged (see ``_merge_hyphenated``).
-        """
+    def _detect_inner(self, text: str, options) -> list[Span]:
+        """Run NER on ``text`` with filtering; used by both full-doc and per-line passes."""
         doc = self._Doc(_normalize_caps(text))
         doc.segment(self._segmenter)
         doc.tag_morph(self._morph_tagger)
@@ -234,6 +223,50 @@ class NerPipeline:
             if all(f.keep(span, value, start, stop, category, options, ctx) for f in FILTERS):
                 spans.append(Span(start, stop, category, value))
         return _merge_hyphenated(text, spans)
+
+    def detect(self, text: str, options) -> list[Span]:
+        """Detect PERSON, ORG, and LOC spans with Natasha.
+
+        PERSON is always tokenized; ORG/LOC are suppressed by ``ner_org=False`` /
+        ``ner_loc=False`` on ``options``. NER runs over a case-normalized copy (see
+        ``_normalize_caps``) so ALL-CAPS entities are tagged; because that rewrite
+        is length-preserving, each span's offsets index the original text and its
+        value is sliced from the original (un-normalized) ``text``. Each span is
+        trimmed (clipped at the first newline, edge whitespace/markdown stripped)
+        and dropped when its value reduces to a known non-sensitive lemma key.
+        Adjacent same-category spans bridged only by a spaced hyphen are then
+        merged (see ``_merge_hyphenated``).
+
+        A per-line fallback pass runs after the full-document NER. Natasha's CRF
+        model occasionally drops an entity when the surrounding lines provide a
+        confusing context (e.g. a bare "/" on the next line). Running NER again on
+        each individual line isolates that context and recovers missed spans. The
+        fallback re-applies skill-section suppression using full-document ranges so
+        that ORG/LOC entities inside skill sections are not incorrectly resurrected.
+        """
+        full_spans = self._detect_inner(text, options)
+
+        skill_ranges = structural.skill_section_ranges(text)
+        extra: list[Span] = []
+        pos = 0
+        for line in text.split("\n"):
+            line_len = len(line)
+            if line.strip():
+                for span in self._detect_inner(line, options):
+                    abs_start = pos + span.start
+                    abs_end = pos + span.end
+                    if span.category in (Category.ORG, Category.LOC):
+                        if structural.is_in_any_range(abs_start, skill_ranges):
+                            continue
+                    adjusted = Span(abs_start, abs_end, span.category, span.value)
+                    if not _overlaps(adjusted, full_spans) and not _overlaps(adjusted, extra):
+                        extra.append(adjusted)
+            pos += line_len + 1
+
+        if not extra:
+            return full_spans
+
+        return _merge_hyphenated(text, full_spans + extra)
 
 
 def get_default(on_step: Callable[[str], None] | None = None) -> NerPipeline:
@@ -282,6 +315,10 @@ def _trim(start: int, value: str) -> tuple[int, int, str] | None:
 def _tech_key(value: str) -> str:
     """Casefolded, whitespace-collapsed key for developer-tool matching."""
     return " ".join(value.split()).casefold()
+
+
+def _overlaps(span: Span, others: list[Span]) -> bool:
+    return any(span.start < o.end and o.start < span.end for o in others)
 
 
 # A hyphen with optional inline (non-newline) spaces on either side. pdf2md
