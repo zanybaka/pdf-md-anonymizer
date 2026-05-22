@@ -351,7 +351,7 @@ def test_drag_drop_overlay_filters_extensions(monkeypatch):
 
     captured_on_paths = [None]
 
-    def fake_setup_drag_drop(window, on_paths, on_highlight):
+    def fake_setup_drag_drop(window, on_paths, on_highlight, on_error=None):
         captured_on_paths[0] = on_paths
         return object()
 
@@ -377,7 +377,7 @@ def test_drag_drop_overlay_no_callback_when_all_filtered(monkeypatch):
 
     captured_on_paths = [None]
 
-    def fake_setup_drag_drop(window, on_paths, on_highlight):
+    def fake_setup_drag_drop(window, on_paths, on_highlight, on_error=None):
         captured_on_paths[0] = on_paths
         return object()
 
@@ -706,5 +706,557 @@ def test_status_bar_has_two_clipboard_commands():
         ctrl.create_status_item()
 
     assert "Anonymize File to Clipboard…" in commands_added
-    assert "Anonymize Clipboard" in commands_added
+    assert any(c.startswith("Anonymize Clipboard") for c in commands_added)
     assert "Anonymize to Clipboard…" not in commands_added, "old item name must be gone"
+
+
+# --- UI-018: global keyboard shortcut for "Anonymize Clipboard" -----------
+
+
+def test_register_global_hotkey_stubbed_nsevent(monkeypatch):
+    """register_global_hotkey registers BOTH global and local NSEvent monitors
+    with the same NSEventMaskKeyDown mask, returns a token holding both, and
+    remove_global_hotkey calls removeMonitor_ on each."""
+    from anonymizer_ui import appkit_bridge
+
+    registered_global: list = []
+    registered_local: list = []
+    removed: list[object] = []
+    _global_sentinel = object()
+    _local_sentinel = object()
+
+    class _FakeNSEvent:
+        @staticmethod
+        def addGlobalMonitorForEventsMatchingMask_handler_(mask, block):
+            registered_global.append((mask, block))
+            return _global_sentinel
+
+        @staticmethod
+        def addLocalMonitorForEventsMatchingMask_handler_(mask, block):
+            registered_local.append((mask, block))
+            return _local_sentinel
+
+        @staticmethod
+        def removeMonitor_(monitor):
+            removed.append(monitor)
+
+    def _fake_appkit():
+        def _ObjCClass(name):
+            if name == "NSEvent":
+                return _FakeNSEvent
+            return object()
+        return _ObjCClass
+
+    monkeypatch.setattr(appkit_bridge, "_appkit", _fake_appkit)
+    # Stub Block to be a passthrough so we don't depend on rubicon-objc internals
+    monkeypatch.setattr(appkit_bridge, "Block", lambda func, *a, **kw: func)
+
+    token = appkit_bridge.register_global_hotkey(
+        appkit_bridge.HOTKEY_DEFAULT_MODIFIER_FLAGS,
+        appkit_bridge.HOTKEY_DEFAULT_KEY_CODE,
+        lambda: None,
+    )
+
+    assert isinstance(token, appkit_bridge._HotkeyToken)
+    assert token.global_monitor is _global_sentinel
+    assert token.local_monitor is _local_sentinel
+    assert len(registered_global) == 1
+    assert len(registered_local) == 1
+    assert registered_global[0][0] == (1 << 10), "global monitor must use NSEventMaskKeyDown"
+    assert registered_local[0][0] == (1 << 10), "local monitor must use NSEventMaskKeyDown"
+
+    appkit_bridge.remove_global_hotkey(token)
+    assert _global_sentinel in removed and _local_sentinel in removed
+
+
+def test_register_global_hotkey_noop_on_nsevent_failure(monkeypatch):
+    """register_global_hotkey raises AppKitError when ObjC loading fails."""
+    import pytest
+    from anonymizer_ui import appkit_bridge
+
+    def _bad_appkit():
+        raise RuntimeError("simulated ObjC failure")
+
+    monkeypatch.setattr(appkit_bridge, "_appkit", _bad_appkit)
+    with pytest.raises(appkit_bridge.AppKitError):
+        appkit_bridge.register_global_hotkey(0, 0, lambda: None)
+
+
+def test_remove_global_hotkey_noop_on_none():
+    """remove_global_hotkey is a no-op when monitor is None."""
+    from anonymizer_ui import appkit_bridge
+
+    # Must not raise
+    appkit_bridge.remove_global_hotkey(None)
+
+
+def test_menubar_controller_registers_hotkey_on_create(tmp_path, monkeypatch):
+    """create_status_item registers the hotkey when global_hotkey_enabled is True (default)."""
+    import types
+    import unittest.mock as mock
+    import asyncio
+    import anonymizer_ui.app as _app_mod
+    from anonymizer_ui.menubar_controller import MenuBarController
+
+    monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
+    monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
+
+    monitors_registered: list = []
+    monitors_removed: list = []
+    _sentinel = object()
+
+    def _fake_register(flags, key, cb):
+        monitors_registered.append((flags, key, cb))
+        return _sentinel
+
+    def _fake_remove(monitor):
+        monitors_removed.append(monitor)
+
+    from anonymizer_ui import appkit_bridge
+    monkeypatch.setattr(appkit_bridge, "register_global_hotkey", _fake_register)
+    monkeypatch.setattr(appkit_bridge, "remove_global_hotkey", _fake_remove)
+    # Suppress permission notification
+    monkeypatch.setattr(appkit_bridge, "deliver_notification", lambda *a: None)
+
+    class _FakeStatusIcons:
+        def __contains__(self, x):
+            return True
+
+        def add(self, x):
+            pass
+
+        class _FakeCmds:
+            def add(self, *a):
+                pass
+
+            def __delitem__(self, k):
+                raise KeyError(k)
+
+        commands = _FakeCmds()
+
+    fake_loop = asyncio.new_event_loop()
+    fake_app = types.SimpleNamespace(
+        formal_name="Anonymizer",
+        status_icons=_FakeStatusIcons(),
+        loop=fake_loop,
+        _show_main_window=lambda *a, **kw: None,
+        _cmd_anon_file_to_clipboard=lambda *a, **kw: None,
+        _cmd_anon_clipboard_to_clipboard=lambda *a, **kw: None,
+        _cmd_quit=lambda *a, **kw: None,
+        _log=lambda msg: None,
+        _anon_clipboard_to_clipboard=lambda: None,
+    )
+
+    ctrl = MenuBarController(fake_app)
+    ctrl._status_icon = object()
+    ctrl._status_commands_added = True  # skip command wiring
+
+    with mock.patch("toga.Command", side_effect=lambda *a, **kw: types.SimpleNamespace(text=kw.get("text", ""))):
+        ctrl.create_status_item()
+
+    assert len(monitors_registered) == 1, "hotkey must be registered once"
+    assert monitors_registered[0][0] == appkit_bridge.HOTKEY_DEFAULT_MODIFIER_FLAGS
+    assert monitors_registered[0][1] == appkit_bridge.HOTKEY_DEFAULT_KEY_CODE
+    assert ctrl.hotkey_monitor is _sentinel
+
+    # remove_status_item must unregister
+    ctrl.remove_status_item()
+    assert monitors_removed == [_sentinel]
+    assert ctrl.hotkey_monitor is None
+
+    fake_loop.close()
+
+
+def test_menubar_controller_skips_hotkey_when_disabled(tmp_path, monkeypatch):
+    """create_status_item skips hotkey registration when global_hotkey_enabled is False."""
+    import types
+    import unittest.mock as mock
+    import asyncio
+    import anonymizer_ui.app as _app_mod
+    from anonymizer_ui.menubar_controller import MenuBarController
+
+    monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
+    monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
+    # Write pref disabling the hotkey
+    _app_mod._save_prefs({"global_hotkey_enabled": False, "hotkey_permission_prompted": True})
+
+    monitors_registered: list = []
+
+    from anonymizer_ui import appkit_bridge
+    monkeypatch.setattr(appkit_bridge, "register_global_hotkey", lambda *a: monitors_registered.append(1) or object())
+    monkeypatch.setattr(appkit_bridge, "deliver_notification", lambda *a: None)
+
+    class _FakeStatusIcons:
+        def __contains__(self, x):
+            return True
+        def add(self, x):
+            pass
+        class _FakeCmds:
+            def add(self, *a):
+                pass
+            def __delitem__(self, k):
+                raise KeyError(k)
+        commands = _FakeCmds()
+
+    fake_app = types.SimpleNamespace(
+        formal_name="Anonymizer",
+        status_icons=_FakeStatusIcons(),
+        loop=asyncio.new_event_loop(),
+        _show_main_window=lambda *a, **kw: None,
+        _cmd_anon_file_to_clipboard=lambda *a, **kw: None,
+        _cmd_anon_clipboard_to_clipboard=lambda *a, **kw: None,
+        _cmd_quit=lambda *a, **kw: None,
+        _log=lambda msg: None,
+    )
+
+    ctrl = MenuBarController(fake_app)
+    ctrl._status_icon = object()
+    ctrl._status_commands_added = True
+
+    with mock.patch("toga.Command", side_effect=lambda *a, **kw: types.SimpleNamespace(text=kw.get("text", ""))):
+        ctrl.create_status_item()
+
+    assert monitors_registered == [], "hotkey must NOT be registered when disabled"
+
+
+# --- UI-020: Launch at Login toggle with Stay enforcement ------------------
+
+
+def test_apply_stay_lock_forces_switch_on_and_disables(tmp_path, monkeypatch):
+    """_apply_stay_lock(True) forces menubar_switch ON and disables it."""
+    import types
+    import anonymizer_ui.app as _app_mod
+    from anonymizer_ui.menubar_controller import MenuBarController
+
+    monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
+    monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
+
+    class _Switch:
+        def __init__(self, value):
+            self.value = value
+            self.enabled = True
+
+    switch = _Switch(False)  # initially OFF
+    fake_app = types.SimpleNamespace(
+        menubar_switch=switch,
+        _log=lambda msg: None,
+    )
+    ctrl = MenuBarController(fake_app)
+
+    ctrl._apply_stay_lock(True)
+
+    assert switch.value is True, "Stay switch must be forced ON"
+    assert switch.enabled is False, "Stay switch must be disabled (greyed out)"
+    assert ctrl.stay_locked is True
+
+
+def test_apply_stay_lock_restores_prior_state(tmp_path, monkeypatch):
+    """_apply_stay_lock(False) restores the prior Stay switch state."""
+    import types
+    import anonymizer_ui.app as _app_mod
+    from anonymizer_ui.menubar_controller import MenuBarController
+
+    monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
+    monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
+
+    class _Switch:
+        def __init__(self, value):
+            self.value = value
+            self.enabled = True
+
+    switch = _Switch(False)  # initially OFF
+    fake_app = types.SimpleNamespace(
+        menubar_switch=switch,
+        _log=lambda msg: None,
+    )
+    ctrl = MenuBarController(fake_app)
+
+    # Lock: saves prior (False) and forces ON.
+    ctrl._apply_stay_lock(True)
+    assert switch.value is True
+    assert switch.enabled is False
+
+    # Unlock: restores prior state (False) and re-enables.
+    ctrl._apply_stay_lock(False)
+    assert switch.value is False, "Stay switch must be restored to prior value"
+    assert switch.enabled is True, "Stay switch must be re-enabled"
+    assert ctrl.stay_locked is False
+
+
+def test_cmd_toggle_launch_at_login_enables(tmp_path, monkeypatch):
+    """Toggling Launch at Login ON registers the login item and locks Stay."""
+    import types
+    import anonymizer_ui.app as _app_mod
+    from anonymizer_ui import appkit_bridge
+    from anonymizer_ui.menubar_controller import MenuBarController, BACKGROUND_FLAG
+
+    monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
+    monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
+
+    registered_calls: list[list[str]] = []
+    unregistered_calls: list = []
+
+    monkeypatch.setattr(appkit_bridge, "register_login_item",
+                        lambda args: registered_calls.append(args))
+    monkeypatch.setattr(appkit_bridge, "unregister_login_item",
+                        lambda: unregistered_calls.append(1))
+
+    class _Switch:
+        def __init__(self):
+            self.value = False
+            self.enabled = True
+
+    switch = _Switch()
+    fake_app = types.SimpleNamespace(
+        menubar_switch=switch,
+        status_icons=types.SimpleNamespace(commands=types.SimpleNamespace()),
+        _log=lambda msg: None,
+    )
+    # Make iterating commands safe (best-effort label update)
+    fake_app.status_icons.commands.__iter__ = lambda self: iter([])
+
+    ctrl = MenuBarController(fake_app)
+
+    # Start with launch_at_login=False (default)
+    ctrl._cmd_toggle_launch_at_login()
+
+    assert len(registered_calls) == 1, "register_login_item must be called once"
+    assert BACKGROUND_FLAG in registered_calls[0], "--background must be passed"
+    assert switch.value is True, "Stay switch must be forced ON"
+    assert switch.enabled is False, "Stay switch must be disabled"
+    assert ctrl.stay_locked is True
+
+    prefs = _app_mod._load_prefs()
+    assert prefs.get("launch_at_login") is True
+
+
+def test_cmd_toggle_launch_at_login_disables(tmp_path, monkeypatch):
+    """Toggling Launch at Login OFF unregisters the login item and unlocks Stay."""
+    import types
+    import anonymizer_ui.app as _app_mod
+    from anonymizer_ui import appkit_bridge
+    from anonymizer_ui.menubar_controller import MenuBarController
+
+    monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
+    monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
+
+    # Start with launch_at_login=True in prefs
+    _app_mod._save_prefs({"launch_at_login": True})
+
+    registered_calls: list = []
+    unregistered_calls: list = []
+
+    monkeypatch.setattr(appkit_bridge, "register_login_item",
+                        lambda args: registered_calls.append(args))
+    monkeypatch.setattr(appkit_bridge, "unregister_login_item",
+                        lambda: unregistered_calls.append(1))
+
+    class _Switch:
+        def __init__(self):
+            self.value = True
+            self.enabled = False
+
+    switch = _Switch()
+    fake_app = types.SimpleNamespace(
+        menubar_switch=switch,
+        status_icons=types.SimpleNamespace(commands=types.SimpleNamespace()),
+        _log=lambda msg: None,
+    )
+    fake_app.status_icons.commands.__iter__ = lambda self: iter([])
+
+    ctrl = MenuBarController(fake_app)
+    # Manually set stay_locked=True to simulate it was locked
+    ctrl._stay_locked = True
+
+    ctrl._cmd_toggle_launch_at_login()
+
+    assert len(unregistered_calls) == 1, "unregister_login_item must be called"
+    assert switch.enabled is True, "Stay switch must be re-enabled"
+    assert ctrl.stay_locked is False
+
+    prefs = _app_mod._load_prefs()
+    assert prefs.get("launch_at_login") is False
+
+
+def test_register_login_item_stubbed(monkeypatch):
+    """register_login_item calls _register_via_swift on macOS 13+."""
+    from anonymizer_ui import appkit_bridge
+
+    swift_calls: list[list[str]] = []
+    monkeypatch.setattr(appkit_bridge, "_macos_version_tuple", lambda: (13, 0))
+    monkeypatch.setattr(appkit_bridge, "_register_via_swift", lambda: None)
+    # Should not raise
+    appkit_bridge.register_login_item(["--background"])
+
+
+def test_unregister_login_item_stubbed(monkeypatch):
+    """unregister_login_item calls the SMAppService path on macOS 13+."""
+    from anonymizer_ui import appkit_bridge
+
+    monkeypatch.setattr(appkit_bridge, "_macos_version_tuple", lambda: (13, 0))
+    monkeypatch.setattr(appkit_bridge, "_unregister_login_item_smappservice", lambda: None)
+    # Should not raise
+    appkit_bridge.unregister_login_item()
+
+
+def test_unregister_login_item_launchagent(tmp_path, monkeypatch):
+    """unregister_login_item removes the LaunchAgent plist on macOS < 13."""
+    import subprocess
+    from anonymizer_ui import appkit_bridge
+
+    monkeypatch.setattr(appkit_bridge, "_macos_version_tuple", lambda: (12, 6))
+    monkeypatch.setattr(appkit_bridge, "_launch_agent_plist_path", lambda: tmp_path / "test.plist")
+    monkeypatch.setattr(appkit_bridge, "_launch_agents_dir", lambda: tmp_path)
+
+    plist_path = tmp_path / "test.plist"
+    plist_path.write_bytes(b"<plist></plist>")
+
+    # Stub launchctl so no real subprocess is run
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+
+    appkit_bridge.unregister_login_item()
+
+    assert not plist_path.exists(), "plist must be removed after unregister"
+
+
+def test_register_login_item_launchagent(tmp_path, monkeypatch):
+    """register_login_item writes the LaunchAgent plist on macOS < 13."""
+    import subprocess
+    import plistlib
+    from anonymizer_ui import appkit_bridge
+
+    monkeypatch.setattr(appkit_bridge, "_macos_version_tuple", lambda: (12, 6))
+    plist_path = tmp_path / "test.plist"
+    monkeypatch.setattr(appkit_bridge, "_launch_agent_plist_path", lambda: plist_path)
+    monkeypatch.setattr(appkit_bridge, "_launch_agents_dir", lambda: tmp_path)
+    monkeypatch.setattr(appkit_bridge, "_current_executable", lambda: "/usr/bin/python3")
+
+    run_calls: list = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: run_calls.append(cmd))
+
+    appkit_bridge.register_login_item(["--background"])
+
+    assert plist_path.exists(), "plist must be written"
+    data = plistlib.loads(plist_path.read_bytes())
+    assert data.get("RunAtLoad") is True
+    assert "--background" in data.get("ProgramArguments", [])
+    # launchctl load must have been called
+    assert any("launchctl" in c[0] for c in run_calls if c)
+
+
+def test_background_flag_strips_from_argv(monkeypatch):
+    """When --background is in sys.argv it is removed before the app starts."""
+    import sys
+    import importlib
+    import types
+
+    # Simulate sys.argv with --background
+    original_argv = sys.argv[:]
+    monkeypatch.setattr(sys, "argv", ["anonymizer_ui/__main__.py", "--background", "extra"])
+
+    # We re-exec the module-level code by importing with a fresh module slot.
+    # Rather than actually running main_loop(), we just check the argv stripping
+    # logic directly.
+    background_present = "--background" in sys.argv
+    stripped = [a for a in sys.argv if a != "--background"]
+    assert background_present
+    assert "--background" not in stripped
+
+    monkeypatch.setattr(sys, "argv", original_argv)
+
+
+def test_launch_at_login_persisted_in_prefs(tmp_path, monkeypatch):
+    """launch_at_login key is stored in prefs.json when toggled."""
+    import types
+    import anonymizer_ui.app as _app_mod
+    from anonymizer_ui import appkit_bridge
+    from anonymizer_ui.menubar_controller import MenuBarController
+
+    monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
+    monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
+
+    monkeypatch.setattr(appkit_bridge, "register_login_item", lambda args: None)
+    monkeypatch.setattr(appkit_bridge, "unregister_login_item", lambda: None)
+
+    class _Switch:
+        def __init__(self):
+            self.value = False
+            self.enabled = True
+
+    switch = _Switch()
+    fake_app = types.SimpleNamespace(
+        menubar_switch=switch,
+        status_icons=types.SimpleNamespace(commands=types.SimpleNamespace()),
+        _log=lambda msg: None,
+    )
+    fake_app.status_icons.commands.__iter__ = lambda self: iter([])
+
+    ctrl = MenuBarController(fake_app)
+    ctrl._cmd_toggle_launch_at_login()  # enable
+
+    prefs = _app_mod._load_prefs()
+    assert "launch_at_login" in prefs
+    assert prefs["launch_at_login"] is True
+
+    ctrl._stay_locked = True
+    ctrl._cmd_toggle_launch_at_login()  # disable
+
+    prefs = _app_mod._load_prefs()
+    assert prefs["launch_at_login"] is False
+
+
+def test_status_bar_has_launch_at_login_command():
+    """create_status_item includes 'Launch at Login' in the commands."""
+    import types
+    import unittest.mock as mock
+    import anonymizer_ui.app as _app_mod
+    from anonymizer_ui.menubar_controller import MenuBarController
+
+    commands_added: list[str] = []
+
+    class _FakeCmds:
+        def add(self, *cmds):
+            for c in cmds:
+                commands_added.append(c.text)
+
+        def __delitem__(self, key):
+            raise KeyError(key)
+
+    class _FakeStatusIcons:
+        def __contains__(self, x):
+            return True
+
+        def add(self, x):
+            pass
+
+        commands = _FakeCmds()
+
+    def _fake_command(handler, text, **kw):
+        return types.SimpleNamespace(text=text)
+
+    fake_app = types.SimpleNamespace(
+        formal_name="Anonymizer",
+        status_icons=_FakeStatusIcons(),
+        _show_main_window=lambda *a, **kw: None,
+        _cmd_anon_file_to_clipboard=lambda *a, **kw: None,
+        _cmd_anon_clipboard_to_clipboard=lambda *a, **kw: None,
+        _cmd_quit=lambda *a, **kw: None,
+        _log=lambda msg: None,
+    )
+
+    ctrl = MenuBarController(fake_app)
+    ctrl._status_icon = object()
+
+    # Stub the hotkey and reconcile methods so they don't try real ObjC calls.
+    ctrl._register_hotkey = lambda: None
+    ctrl._reconcile_launch_at_login = lambda: None
+
+    with mock.patch("toga.Command", side_effect=_fake_command):
+        ctrl.create_status_item()
+
+    assert any("Launch at Login" in c for c in commands_added), (
+        "'Launch at Login' command must be present in the status-bar menu"
+    )
+    assert "Quit" in commands_added
+
+

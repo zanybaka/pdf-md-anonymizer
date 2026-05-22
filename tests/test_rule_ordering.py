@@ -6,6 +6,7 @@ from anonymizer.detect.regex_rules import RULES
 def test_rule_ordering_snapshot():
     assert [r.name for r in RULES] == [
         "EMAIL",
+        "NICKNAME",
         "URL",
         "SECRET_PEM",
         "SECRET_KEY_VALUE",

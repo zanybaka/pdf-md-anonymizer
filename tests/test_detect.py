@@ -264,3 +264,40 @@ def test_detect_checksum_round_trip():
     text = "ИНН 7707083893, ОГРН 1027700132195, бар 7707083893 ещё."
     result = anonymize(text, Options())
     assert restore(result.text, result.mapping) == text
+
+
+# --- DETECT-004: @-style nickname mentions ---------------------------------
+
+
+def test_nickname_simple_handles():
+    for handle in ("@vasily", "@john_doe", "@user-name"):
+        spans = [s for s in detect(f"Написал {handle} сегодня.") if s.category == "NICKNAME"]
+        assert spans and spans[0].value == handle, f"expected NICKNAME for {handle}"
+
+
+def test_email_wins_over_nickname():
+    # Raw detect returns both; overlap resolution in detect_all keeps only EMAIL.
+    spans = detect_all("vasily@example.com", Options())
+    assert [s for s in spans if s.category == "EMAIL"]
+    assert not [s for s in spans if s.category == "NICKNAME"]
+
+
+def test_bare_at_sign_not_matched():
+    assert not [s for s in detect("price @ 100 rub") if s.category == "NICKNAME"]
+
+
+def test_at_digit_not_matched():
+    assert not [s for s in detect("версия @123") if s.category == "NICKNAME"]
+
+
+def test_consecutive_mentions_both_caught():
+    spans = [s for s in detect("@vasi@vasi") if s.category == "NICKNAME"]
+    assert [s.value for s in spans] == ["@vasi", "@vasi"]
+
+
+def test_nickname_round_trip():
+    text = "Связаться: @vasily или @john_doe."
+    result = anonymize(text, Options())
+    assert "@vasily" not in result.text
+    assert "@john_doe" not in result.text
+    assert restore(result.text, result.mapping) == text

@@ -62,7 +62,7 @@ def test_objcclass_only_in_appkit_bridge():
 _CATEGORY_NAMES = [
     "EMAIL", "PHONE", "INN", "SNILS", "OGRN", "OGRNIP", "KPP", "BIK",
     "ACCOUNT", "CARD", "DOB", "POSTAL_CODE", "ADDRESS", "PASSPORT",
-    "IP", "URL", "SECRET", "ORG", "PERSON", "LOC",
+    "IP", "URL", "SECRET", "ORG", "PERSON", "LOC", "NICKNAME",
 ]
 
 # Files that must NOT contain bare category string literals (the enum module

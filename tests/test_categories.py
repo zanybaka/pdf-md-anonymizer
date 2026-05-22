@@ -14,4 +14,4 @@ def test_token_format():
 
 
 def test_all_members():
-    assert len(Category) == 20
+    assert len(Category) == 21

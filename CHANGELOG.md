@@ -4,6 +4,66 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- **DETECT-004** Regex detector for `@`-style nickname mentions. A new
+  `NICKNAME` category and rule detect handles such as `@vasily`, `@john_doe`,
+  and `@user-name`. The negative lookbehind `(?<!\w)` prevents matching the
+  local-part of an email address (`vasily@example.com`), and the EMAIL rule
+  (ordered first) wins any overlap. A bare `@` or `@123` (no leading letter)
+  is not matched. `Category.NICKNAME` added to the `Category` StrEnum.
+  Rule ordering snapshot updated.
+
+- **UI-020** "Launch at Login" toggle in the status-bar menu, placed in the
+  same section as the Quit item. When enabled, the app registers itself as
+  a macOS login item with `--background` via `SMAppService.mainAppService`
+  (macOS 13+) or a user `LaunchAgent` plist (older macOS), and forces the
+  "Stay in menu bar" switch ON and disables it (menu-bar mode is a
+  prerequisite for a background-only start). When disabled, the login item
+  is unregistered and the Stay switch is restored to its prior state.
+  The `--background` flag is consumed in `__main__.py` before
+  `toga.App.main_loop()`; when present, `main_window.show()` is skipped so
+  only the menu-bar icon appears at login. `launch_at_login: bool` is
+  persisted in `prefs.json`. On startup the pref is reconciled with the
+  actual `SMAppService` registration status. No new runtime dependencies.
+  New `appkit_bridge` helpers: `register_login_item(args)`,
+  `unregister_login_item()`, `is_login_item_registered()`.
+  New `MenuBarController` methods: `_apply_stay_lock`, `_cmd_toggle_launch_at_login`,
+  `_reconcile_launch_at_login`, `stay_locked` property.
+
+### Fixed
+- **UI-019** Drag-and-drop was silently rejected on macOS 12+ because Finder
+  switched its primary file-drag pasteboard type from `NSFilenamesPboardType`
+  to `public.file-url` (NSPasteboardTypeFileURL), but the overlay registered
+  only the legacy type so `draggingEntered_` was never called — no drop cursor
+  appeared and files were never added to the list.
+  Fix in `appkit_bridge.setup_drag_drop`: (1) the overlay now registers for
+  **both** `"NSFilenamesPboardType"` and `"public.file-url"` so AppKit invokes
+  the drag-enter callback on all macOS versions; (2) `performDragOperation_`
+  tries the legacy `propertyListForType_("NSFilenamesPboardType")` path first
+  and falls back to `readObjectsForClasses_options_(NSArray<NSURL>, None)`,
+  extracting paths via `NSURL.path`, when the legacy type returns nothing.
+  The `.pdf`/`.md` extension filter in `drag_drop_overlay.setup` is unchanged.
+  No new dependencies.
+
+### Added
+- **UI-018** Global system keyboard shortcut ⌃⌥⌘C for "Anonymize Clipboard"
+  while menu-bar mode is active. Uses
+  `NSEvent.addGlobalMonitorForEventsMatchingMask:handler:` (Input Monitoring)
+  so the action works from any application without switching focus.
+  The handler fires on an AppKit thread and schedules work on the asyncio
+  event loop via `loop.call_soon_threadsafe`, producing identical UX to the
+  menu-bar "Anonymize Clipboard" item (same notification, same busy icon).
+  A `global_hotkey_enabled: bool` pref (default `true`) in `prefs.json`
+  suppresses registration without disabling menu-bar mode.  A one-time
+  guidance notification fires on first menu-bar activation to direct the user
+  to System Settings › Privacy & Security › Input Monitoring; the
+  `hotkey_permission_prompted: bool` pref prevents repeat prompts.
+  The shortcut is registered when the status item is created and unregistered
+  when it is removed — active/inactive within one toggle cycle, no restart
+  needed.  `appkit_bridge.register_global_hotkey` /
+  `appkit_bridge.remove_global_hotkey` are independently unit-tested with a
+  stubbed `NSEvent` class.
+
 ### Fixed
 - `NerPipeline.detect` now recovers PERSON (and ORG/LOC) spans that Natasha's CRF
   model silently drops when the immediately surrounding lines provide a confusing

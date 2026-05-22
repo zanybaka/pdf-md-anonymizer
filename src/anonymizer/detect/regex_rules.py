@@ -138,6 +138,13 @@ _URL_TLD = "|".join(URL_TLDS)
 # Order matters: earlier rules win ties during overlap resolution.
 RULES: list[Rule] = [
     Rule("EMAIL", Category.EMAIL, re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")),
+    # @-style nickname mentions. No lookbehind is used so that consecutive
+    # mentions like @alice@bob are both caught. A bare "@" or "@123" (no
+    # leading letter after @) is still rejected by the lookahead (?=[a-zA-Z]).
+    # vasily@example.com is handled entirely by the EMAIL rule above: EMAIL
+    # wins the overlap during _resolve because it is ordered first and its
+    # span fully contains the @domain.tld substring.
+    Rule("NICKNAME", Category.NICKNAME, re.compile(r"@(?=[a-zA-Z])[a-zA-Z0-9_.\-]{1,50}")),
     # URL: a scheme URL, a "www." host, or a scheme-less bare domain anchored
     # on a known TLD (catches markdown link text like "[www.site.com/x](…)"
     # and a plain "unicum.ru", neither of which carries an "https://" prefix).

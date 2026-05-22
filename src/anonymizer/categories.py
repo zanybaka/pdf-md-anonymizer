@@ -25,3 +25,4 @@ class Category(StrEnum):
     ORG = "ORG"
     PERSON = "PERSON"
     LOC = "LOC"
+    NICKNAME = "NICKNAME"

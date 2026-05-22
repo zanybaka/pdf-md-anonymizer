@@ -153,10 +153,38 @@ class AnonymizerApp(toga.App):
         )
 
         self.main_window.on_close = self._on_window_close
-        self.main_window.show()
+        # Suppress the main window when launched at login (launch_at_login
+        # pref is True).  SMAppService on macOS 13+ cannot pass CLI args, so
+        # we cannot rely on --background being in sys.argv.  Checking the pref
+        # is the only reliable mechanism on both macOS versions.
+        if not prefs.get("launch_at_login", False):
+            self.main_window.show()
 
         if prefs.get("stay_in_menubar", False):
             self._menubar.create_status_item()
+            # Toga builds NSMenu after startup() returns; defer checkmark sync.
+            try:
+                self.loop.call_soon(self._menubar._sync_launch_at_login_checkmark)
+            except Exception:
+                pass
+
+        # Apply Stay-lock if Launch at Login is enabled (keeps Stay forced ON
+        # and greyed out while the login item is registered).
+        if prefs.get("launch_at_login", False):
+            self._menubar._apply_stay_lock(True)
+            # Window was suppressed; switch to Accessory policy so the Dock
+            # icon is also hidden (same effect as closing the window normally).
+            try:
+                appkit_bridge.set_dock_visible(False)
+            except appkit_bridge.AppKitError as exc:
+                self._log(str(exc))
+
+        # Show the main window when the user re-launches the app while it's
+        # already running in the menu bar (Finder double-click / Spotlight).
+        try:
+            appkit_bridge.install_reopen_handler(self._menubar.show_main_window)
+        except appkit_bridge.AppKitError as exc:
+            self._log(f"reopen handler not installed: {exc}")
 
         # Set up PDF backend controller (needs widget refs to be ready)
         self._pdf_ctrl = PdfBackendController(
@@ -204,6 +232,8 @@ class AnonymizerApp(toga.App):
         _save_prefs(prefs)
         if widget.value:
             self._menubar.create_status_item()
+            # Sync the native checkmark after menu is fully built.
+            self._menubar._sync_launch_at_login_checkmark()
         else:
             self._menubar.remove_status_item()
 
@@ -282,6 +312,31 @@ class AnonymizerApp(toga.App):
             busy_body="Clipboard text",
             done_title="Anonymized to clipboard",
             done_body="Clipboard text anonymized",
+        )
+
+    async def _anon_selection_to_clipboard(self) -> None:
+        """Copy current selection (Cmd+C), then anonymize the clipboard.
+
+        Wired to the global ⌃⌥⌘C hotkey: works in any focused app.
+        """
+        before = self._read_clipboard() or ""
+        try:
+            appkit_bridge.send_cmd_c()
+        except appkit_bridge.AppKitError as exc:
+            self._send_notification("Cmd+C failed", str(exc)[:120])
+            return
+        # Give the OS a moment to update the pasteboard from the foreign app.
+        await asyncio.sleep(0.15)
+        after = self._read_clipboard() or ""
+        if after == before:
+            self._send_notification("No text selected", "Select text first, then press ⌃⌥⌘C")
+            return
+        await self._anonymize_in_thread(
+            source=lambda: after,
+            busy_title="Anonymizing…",
+            busy_body="Selected text",
+            done_title="Anonymized to clipboard",
+            done_body="Selection anonymized — paste with ⌘V",
         )
 
     async def _anonymize_in_thread(
@@ -402,9 +457,10 @@ class AnonymizerApp(toga.App):
                 self.main_window,
                 on_paths=self._add_inputs,
                 on_highlight=self._show_drop_highlight,
+                on_error=self._log,
             )
-        except appkit_bridge.AppKitError:
-            pass
+        except appkit_bridge.AppKitError as exc:
+            self._log(f"drag-drop setup failed: {exc}")
 
     @staticmethod
     def _make_primary_button(button: toga.Button) -> None:
