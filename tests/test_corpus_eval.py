@@ -36,15 +36,11 @@ def test_recall_regression_is_visible_in_the_numbers():
     corpus = load_corpus()
     baseline = evaluate(corpus)
     # Pick a category the corpus actually exercises and the detector finds.
-    category = next(
-        c for c, m in baseline.items()
-        if m["tp"] + m["fn"] > 0 and m["recall"] > 0.0
-    )
+    category = next(c for c, m in baseline.items() if m["tp"] + m["fn"] > 0 and m["recall"] > 0.0)
 
     def broken_detect(text):
         # Deliberate regression: this category is no longer detected.
-        return [s for s in detect_all(text, Options())
-                if s.category != category]
+        return [s for s in detect_all(text, Options()) if s.category != category]
 
     regressed = evaluate(corpus, detect_fn=broken_detect)
     assert regressed[category]["recall"] < baseline[category]["recall"]

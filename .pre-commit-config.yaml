@@ -1,0 +1,39 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.14
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.1.0
+    hooks:
+      - id: mypy
+        # Only the well-typed core — exclude detect/ (natasha, no stubs) and anonymizer_ui/ (Toga, no stubs)
+        files: ^src/anonymizer/(?!detect)
+        args: [--ignore-missing-imports]
+        additional_dependencies: []
+
+  # Dead-code detection. Uses the [tool.vulture] paths/ignore-names config in
+  # pyproject.toml and the vulture_whitelist.py at repo root, so pass_filenames
+  # is false (we always scan the configured tree, not just changed files).
+  - repo: https://github.com/jendrikseipp/vulture
+    rev: v2.16
+    hooks:
+      - id: vulture
+        pass_filenames: false
+
+  # Cyclomatic-complexity gate. xenon wraps radon and fails the commit when a
+  # function lands at rank C (CCN ≥ 11) or a module averages worse than B.
+  # ``language: python`` (not ``system``) so pre-commit creates an isolated
+  # venv for the hook — xenon doesn't need to be on the user's PATH.
+  - repo: local
+    hooks:
+      - id: xenon
+        name: xenon (complexity gate)
+        entry: xenon --max-absolute B --max-modules B --max-average A src/
+        language: python
+        additional_dependencies: ["xenon>=0.9"]
+        pass_filenames: false
+        types: [python]

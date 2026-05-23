@@ -9,8 +9,7 @@ from pathlib import Path
 
 from anonymizer.api import Options, anonymize
 from anonymizer.batch import FileStatus, OutputPolicy, Stage, process_files, read_input
-from anonymizer.mapping import dumps_map, load_map, restore
-
+from anonymizer.mapping import load_map, restore, write_map
 
 _EXAMPLES = """\
 examples:
@@ -54,7 +53,8 @@ def _add_anonymize_args(p: argparse.ArgumentParser) -> None:
         help="Input .pdf/.md file(s), glob pattern(s), or '-' for stdin",
     )
     p.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         help="Output file (single input) or directory (multiple inputs); "
         "default: <name>.anon.md next to each input",
     )
@@ -64,24 +64,61 @@ def _add_anonymize_args(p: argparse.ArgumentParser) -> None:
         "default: not written (opt-in)",
     )
     p.add_argument(
-        "--ner-org", action=argparse.BooleanOptionalAction, default=True,
+        "--ner-org",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Tokenize organizations via NER (default: on)",
     )
     p.add_argument(
-        "--ner-loc", action=argparse.BooleanOptionalAction, default=True,
+        "--ner-loc",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Tokenize locations via NER (default: on)",
     )
     p.add_argument(
-        "--consistency-sweep", action=argparse.BooleanOptionalAction, default=True,
+        "--consistency-sweep",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Propagate each detected value to its other occurrences (default: on)",
     )
     p.add_argument(
-        "--ner-pos-filter", action=argparse.BooleanOptionalAction, default=True,
+        "--ner-pos-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Drop ORG/LOC NER spans built only from common nouns (default: on)",
+    )
+    p.add_argument(
+        "--brand-propagation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Propagate a captured company short-name to bare repeats (default: on)",
+    )
+    p.add_argument(
+        "--biometric-mentions",
+        action="store_true",
+        default=False,
+        help="Tokenize biometric-data descriptors (отпечаток пальца, ДНК, …) "
+        "as BIOMETRIC; off by default (DETECT-009)",
+    )
+    p.add_argument(
+        "--family-relations",
+        action="store_true",
+        default=False,
+        help="Tokenize names listed after a Russian family-relation label "
+        "(Супруга, дети, родители, …) as PERSON; off by default (DETECT-012)",
+    )
+    p.add_argument(
+        "--occupation",
+        action="store_true",
+        default=False,
+        help="Tokenize job-title and education-qualification values listed "
+        "after a Russian résumé label (Должность, Образование, Квалификация, "
+        "…) as OCCUPATION; off by default (DETECT-013)",
     )
     p.add_argument("--llm", action="store_true", help="Enable local Ollama detection pass")
     p.add_argument(
-        "--pdf2md-cmd", default=None,
+        "--pdf2md-cmd",
+        default=None,
         help="pdf2md executable (default: the env-local pdf2md, else pdf2md on PATH)",
     )
 
@@ -108,10 +145,7 @@ def _run_single(inp: str, args: argparse.Namespace, options: Options) -> int:
         print(f"anon: {_STAGE_LABELS.get(stage, stage)}", file=sys.stderr)
 
     try:
-        if is_stdin:
-            text = sys.stdin.read()
-        else:
-            text = read_input(inp, args.pdf2md_cmd, on_stage)
+        text = sys.stdin.read() if is_stdin else read_input(inp, args.pdf2md_cmd, on_stage)
     except Exception as exc:  # noqa: BLE001
         print(f"anon: {exc}", file=sys.stderr)
         return 1
@@ -139,7 +173,7 @@ def _run_single(inp: str, args: argparse.Namespace, options: Options) -> int:
 
     if map_path is not None:
         map_path.parent.mkdir(parents=True, exist_ok=True)
-        map_path.write_text(dumps_map(result.mapping), encoding="utf-8")
+        write_map(map_path, result.mapping)
 
     if out_path is None:
         print("anon: done", file=sys.stderr)
@@ -203,6 +237,10 @@ def _run_anonymize(args: argparse.Namespace) -> int:
         llm=args.llm,
         consistency_sweep=args.consistency_sweep,
         ner_pos_filter=args.ner_pos_filter,
+        brand_propagation=args.brand_propagation,
+        biometric_mentions=args.biometric_mentions,
+        family_relations=args.family_relations,
+        occupation=args.occupation,
     )
     inputs = _expand_inputs(args.input)
 
@@ -245,7 +283,7 @@ def main() -> None:
         (a for a in parser._actions if hasattr(a, "choices") and isinstance(a.choices, dict)),
         None,
     )
-    known_subcmds = (set(_sub.choices) | {"-h", "--help"}) if _sub else {"-h", "--help"}
+    known_subcmds = (set(_sub.choices) | {"-h", "--help"}) if _sub is not None else {"-h", "--help"}  # type: ignore[arg-type]
 
     if not argv or argv[0] not in known_subcmds:
         # No subcommand given — parse directly as the default `anonymize` command.

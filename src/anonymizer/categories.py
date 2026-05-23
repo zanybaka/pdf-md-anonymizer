@@ -1,4 +1,5 @@
 """Detection category identifiers."""
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -21,8 +22,11 @@ class Category(StrEnum):
     PASSPORT = "PASSPORT"
     IP = "IP"
     URL = "URL"
-    SECRET = "SECRET"
+    SECRET = "SECRET"  # noqa: S105
     ORG = "ORG"
     PERSON = "PERSON"
     LOC = "LOC"
     NICKNAME = "NICKNAME"
+    BIOMETRIC = "BIOMETRIC"
+    MEDICAL = "MEDICAL"
+    OCCUPATION = "OCCUPATION"

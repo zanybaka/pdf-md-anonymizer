@@ -2,77 +2,33 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Briefcase: prep — symlink build dirs out of iCloud (auto)",
+      "label": "Briefcase: 1. build .app",
       "type": "shell",
-      "command": "mkdir -p \"$HOME/.briefcase-out/pdf-md-anonymizer/build\" \"$HOME/.briefcase-out/pdf-md-anonymizer/dist\" && ln -sfn \"$HOME/.briefcase-out/pdf-md-anonymizer/build\" build && ln -sfn \"$HOME/.briefcase-out/pdf-md-anonymizer/dist\" dist",
-      "problemMatcher": [],
-      "detail": "Helper — runs automatically before steps 1-3, no need to pick it manually. Symlinks build/ and dist/ to ~/.briefcase-out (outside iCloud) so iCloud does not evict / UF_HIDDEN the artifacts and break codesigning. Idempotent."
-    },
-    {
-      "label": "Briefcase: 1. create macOS app",
-      "type": "shell",
-      "command": "uvx briefcase create macOS",
-      "options": {
-        "env": { "PIP_FIND_LINKS": "${workspaceFolder}/wheelhouse" }
-      },
-      "dependsOn": ["Briefcase: prep — symlink build dirs out of iCloud (auto)"],
-      "dependsOrder": "sequence",
-      "problemMatcher": [],
-      "detail": "STEP 1 (one-time): scaffold the .app bundle and install its dependencies. Run once; re-run only after changing dependencies. PIP_FIND_LINKS points pip at wheelhouse/ for the docopt wheel (docopt is sdist-only; Briefcase installs bundle deps with --only-binary)."
-    },
-    {
-      "label": "Briefcase: 2. build macOS app",
-      "type": "shell",
-      "command": "uvx briefcase build macOS -u",
-      "options": {
-        "env": { "PIP_FIND_LINKS": "${workspaceFolder}/wheelhouse" }
-      },
-      "dependsOn": ["Briefcase: prep — symlink build dirs out of iCloud (auto)"],
-      "dependsOrder": "sequence",
+      "command": "bash scripts/build_app.sh",
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": [],
-      "detail": "STEP 2: compile pdf-md-anonymizer.app. -u copies fresh source into the bundle before building, so source-only edits are always picked up. Requires step 1 to have run at least once. This is the default build task (Cmd+Shift+B)."
+      "detail": "STEP 1 (default build task, Cmd+Shift+B): scaffold the bundle on first run (briefcase create), then compile pdf-md-anonymizer.app. Symlinks build/ + dist/ out of iCloud and pre-strips numpy .so signatures."
     },
     {
-      "label": "Briefcase: 2a. clean rebuild (delete bundle + create + build)",
+      "label": "Briefcase: 2. package .dmg",
       "type": "shell",
-      "command": "rm -rf \"$HOME/.briefcase-out/pdf-md-anonymizer/build\" && mkdir -p \"$HOME/.briefcase-out/pdf-md-anonymizer/build\" && uvx briefcase create macOS && uvx briefcase build macOS",
-      "options": {
-        "env": { "PIP_FIND_LINKS": "${workspaceFolder}/wheelhouse" }
-      },
-      "dependsOn": ["Briefcase: prep — symlink build dirs out of iCloud (auto)"],
-      "dependsOrder": "sequence",
+      "command": "bash scripts/build_dmg.sh",
       "problemMatcher": [],
-      "detail": "STEP 2a (use when step 2 does not pick up changes): wipes the build directory, re-scaffolds the bundle from scratch (reinstalls all deps), then builds. Slower than step 2 but guaranteed fresh."
+      "detail": "STEP 2 (optional): build the .app (step 1), ad-hoc codesign it, then hdiutil-pack a distributable .dmg with the .app, Applications symlink, First Launch.txt, and Third party notices.txt. Output: dist/PDF-MD Anonymizer-<version>.dmg."
     },
     {
-      "label": "Briefcase: prep — strip numpy .so signatures (auto)",
+      "label": "Briefcase: clean rebuild",
       "type": "shell",
-      "command": "find \"$HOME/.briefcase-out/pdf-md-anonymizer/build\" -name '*.so' -path '*/numpy/*' -exec codesign --remove-signature {} \\; 2>/dev/null; true",
+      "command": "rm -rf \"$HOME/.briefcase-out/pdf-md-anonymizer/build\" && bash scripts/build_app.sh",
       "problemMatcher": [],
-      "detail": "Helper — runs automatically before step 3, no need to pick it manually. Strips existing signatures from numpy .so files so Briefcase's parallel codesign does not hit a race condition on the .cstemp temp files. Idempotent (already-unsigned files are silently skipped)."
+      "detail": "Use when step 1 does not pick up changes (e.g. after a dependency bump): wipes the cached scaffold and re-runs briefcase create + build from scratch. Slower than step 1 but guaranteed fresh."
     },
     {
-      "label": "Briefcase: 3. package macOS app",
-      "type": "shell",
-      "command": "uvx briefcase package macOS && DMG=$(ls \"$HOME/.briefcase-out/pdf-md-anonymizer/dist/\"*.dmg | head -1) && hdiutil convert \"$DMG\" -format UDRW -o /tmp/briefcase_rw.dmg -ov -quiet && hdiutil attach /tmp/briefcase_rw.dmg -nobrowse -mountpoint /tmp/briefcase_mount -quiet && cp \"${workspaceFolder}/First Launch.txt\" \"/tmp/briefcase_mount/\" && hdiutil detach /tmp/briefcase_mount -quiet && rm \"$DMG\" && hdiutil convert /tmp/briefcase_rw.dmg -format UDZO -o \"$DMG\" -quiet && rm /tmp/briefcase_rw.dmg && echo \"DMG ready: $DMG\"",
-      "options": {
-        "env": { "PIP_FIND_LINKS": "${workspaceFolder}/wheelhouse" }
-      },
-      "dependsOn": [
-        "Briefcase: prep — symlink build dirs out of iCloud (auto)",
-        "Briefcase: prep — strip numpy .so signatures (auto)"
-      ],
-      "dependsOrder": "sequence",
-      "problemMatcher": [],
-      "detail": "STEP 3 (optional): produce a distributable .app/.dmg. Requires step 2. The prep tasks keep artifacts outside iCloud and pre-strip numpy signatures so parallel codesigning does not race."
-    },
-    {
-      "label": "Briefcase: run macOS app",
+      "label": "Briefcase: run .app",
       "type": "shell",
       "command": "\"$HOME/.briefcase-out/pdf-md-anonymizer/build/anonymizer-ui/macos/app/PDF-MD Anonymizer.app/Contents/MacOS/PDF-MD Anonymizer\"",
       "problemMatcher": [],
-      "detail": "Launch the built .app directly. We bypass `uvx briefcase run macOS` because it fails on this repo: the `build/` symlink (iCloud workaround, see step 0 prep) means `open -n` resolves to `~/.briefcase-out/...`, but briefcase searches for a process whose cmdline starts with the symlinked path — paths never match, `app_pid is None`, and briefcase exits with code 200 even though the .app is running. Launching the Mach-O binary directly bonds the terminal to the app: Python stderr (tracebacks, our `_log` lines) streams to this terminal, and Ctrl-C kills the app. Run step 2 (build) first."
+      "detail": "Launch the built .app directly. We bypass `uvx briefcase run macOS` because it fails on this repo: the build/ symlink (iCloud workaround) means `open -n` resolves to ~/.briefcase-out/..., but briefcase searches for a process whose cmdline starts with the symlinked path — paths never match, app_pid is None, and briefcase exits with code 200 even though the .app is running. Launching the Mach-O binary directly bonds the terminal to the app: Python stderr (tracebacks, our _log lines) streams to this terminal, and Ctrl-C kills the app. Run step 1 first."
     }
   ]
 }

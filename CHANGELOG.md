@@ -5,6 +5,329 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- **DETECT-013** Optional label-anchored job-title and
+  education-qualification detection. Two new opt-in regex rules
+  (`JOB_TITLE`, `EDUCATION`) in `src/anonymizer/detect/regex_rules.py`
+  capture the free-text role / qualification value listed after a Russian
+  résumé label («Должность», «Занимаемая должность», «Роль» for `JOB_TITLE`;
+  «Образование», «Квалификация», «Специальность», «Учёная степень» for
+  `EDUCATION`) under a new umbrella `Category.OCCUPATION`
+  (`src/anonymizer/categories.py`). The separator anchor requires at least
+  one of `:`, `—`, or `-` between label and value (a pure-whitespace
+  separator is rejected on purpose) so a free-text usage like «должность
+  позволяет ему» — no colon, common-noun follow-on — does **not** match
+  even with the flag on. The capture body `[^\n,;.]+` terminates on
+  end-of-line, comma, semicolon, or period, so `Должность: Главный
+  инженер.` tokenises the role text *without* the trailing period, and a
+  two-clause line `Должность: Главный инженер. Образование: магистр
+  информатики` splits into two distinct OCCUPATION captures. Off by
+  default; opt-in via `Options.occupation: bool = False`
+  (`src/anonymizer/api.py`) plus a CLI flag `--occupation`
+  (`src/anonymizer/cli.py`). Gating uses the existing `Rule.option_name`
+  field — `regex_rules.detect()` skips the gated rule when its
+  `Options` attribute is falsy. The rule-ordering snapshot
+  (`tests/test_rule_ordering.py`) is updated to add `JOB_TITLE`,
+  `EDUCATION` after `FAMILY_RELATION`; the architecture-test category
+  list (`tests/test_architecture.py::_CATEGORY_NAMES`) adds
+  `OCCUPATION`; `Category` member count in `tests/test_categories.py`
+  is bumped from 23 to 24. QA-001 corpus precision/recall is
+  bit-identical when the flag is off (the new rules are gated behind
+  `option_name="occupation"`); round-trip `anonymize → restore`
+  reproduces the input exactly. No new dependencies; no network; no
+  document content in logs.
+
+- **DETECT-012** Optional label-anchored family-relation detection. A new
+  opt-in regex rule (`FAMILY_RELATION`) in
+  `src/anonymizer/detect/regex_rules.py` captures the capitalised names of
+  family members listed after a Russian relation label («Супруга», «дети»,
+  «сын», «дочь», «родители», «отец», «мать», «брат», «сестра» — including
+  the «супруга»/«супруги»/«супругой» inflections) as `Category.PERSON`. The
+  relation noun itself stays in the document — only the captured name
+  becomes the span. Off by default; opt-in via `Options.family_relations:
+  bool = False` (`src/anonymizer/api.py`) plus a CLI flag
+  `--family-relations` (`src/anonymizer/cli.py`). The label part is
+  case-insensitive via inline `(?i:…)` so a mid-sentence `дети:` after a
+  semicolon matches as well as a sentence-leading `Супруга:`; the
+  captured-name `[А-ЯЁ]` first-character anchor stays case-sensitive so a
+  lowercase common-noun follow-on (`Дети программистов учатся быстрее`)
+  does **not** match even with the flag on. A companion
+  `_detect_family_continuation_names` helper walks comma-separated trailing
+  names from the same label scope and emits each as its own PERSON span,
+  so `Супруга: Иванова Анна Петровна; дети: Иванов Пётр, Иванова Мария`
+  yields three distinct `{{PERSON_N}}` tokens. The relation noun list
+  lives inline in the rule (no JSON dictionary, per the task spec). The
+  rule-ordering snapshot (`tests/test_rule_ordering.py`) is updated to add
+  `FAMILY_RELATION` after `BIOMETRIC_MENTION`; QA-001 corpus
+  precision/recall is bit-identical when the flag is off (the new rule is
+  gated behind `option_name="family_relations"`, just like the
+  DETECT-009 biometric-mention precedent); round-trip
+  `anonymize → restore` reproduces the input exactly. No new
+  dependencies; no network; the new helper logs nothing.
+
+- **DETECT-011** Structural validator for the БИК (Bank Identification
+  Code) rule. A new `_bik_ok(value)` helper in
+  `src/anonymizer/detect/regex_rules.py` rejects a 9-digit run that follows
+  a `БИК` label but is not a real BIK: it enforces a 9-digit length, a
+  country prefix in `{"04", "00"}` (Russia / CIS participants of the
+  national payment system per the Central Bank of Russia), and a non-zero
+  combined region-and-territorial sub-field (digits 3-6). The validator is
+  attached to the existing label-anchored `BIK` rule via the `Rule.validator`
+  field — the same wiring `_inn_ok`/`_ogrn_ok`/`_ogrnip_ok`/`_snils_ok` use.
+  There is no published mathematical control-digit for BIK in the public
+  CBR spec, so the validation is **structural** (length + country-prefix +
+  non-zero sub-field) — documented explicitly in the `_bik_ok` docstring.
+  No bare-BIK rule is added: without a mathematical checksum the
+  false-positive rate on bare 9-digit runs (КПП looks identical, postal
+  codes, internal IDs) would be unacceptable. CIS-country BIKs that share
+  the format are kept detectable via the `00` prefix entry. Existing BIK
+  coverage stays green — the corpus value `044599001`
+  (`tests/corpus/02-company.json`) and the inline sample `044525225`
+  (Sberbank Moscow, `tests/test_detect.py`) both pass the new validator;
+  QA-001 baseline metrics are bit-identical. New unit tests in
+  `tests/test_detect.py` cover the four cases: valid Russia-prefix BIK
+  detected, invalid country prefix rejected, all-zero territorial
+  sub-field rejected, corpus value still green, and a round-trip
+  `anonymize → restore` is exact.
+
+- **DETECT-010** Label-anchored medical-data detection. Four new always-on
+  regex rules in `src/anonymizer/detect/regex_rules.py` cover ФЗ-152 medical
+  PII: `OMS` for `Полис ОМС: <16 digits>`, `DMS` for `Полис ДМС: <token>`,
+  `DIAGNOSIS` for `(?:диагноз|анамнез|история болезни): <line>`, and `ICD10`
+  for МКБ-10 codes (`A00.0`…`Z99.9`) appearing immediately after a medical
+  label (`диагноз`, `анамнез`, `МКБ`, `МКБ-10`, `код МКБ`). All four share a
+  single umbrella `Category.MEDICAL` (`src/anonymizer/categories.py`) — the
+  audit row lumps them together and the downstream replacement layer only
+  cares about the category. The rules are precision-safe (every match
+  requires an explicit Russian medical label), so they ship always-on like
+  the existing label-anchored INN/OGRN/etc rules — no `Options` flag is
+  introduced. The ICD-10 rule is compiled without `re.IGNORECASE` so the
+  uppercase-Latin code (`I10.0`) is enforced; the label part carries its own
+  inline `(?i:…)` group so `Диагноз`/`ДИАГНОЗ`/`диагноз` all match. A bare
+  16-digit non-Luhn number outside a `Полис ОМС` label stays untokenised
+  (the existing CARD rule misses real OMS numbers because they are not
+  Luhn-valid), and an ICD-10-shaped token like `Раздел A10.1` in a table of
+  contents is not matched (no preceding medical label). The rule-ordering
+  snapshot (`tests/test_rule_ordering.py`) is updated to include `OMS`,
+  `DMS`, `DIAGNOSIS`, `ICD10` between `SECRET_HIGH_ENTROPY` and
+  `BIOMETRIC_MENTION`; the architecture-test category list adds `MEDICAL`.
+  QA-001 corpus precision/recall is bit-identical (no medical descriptors in
+  the corpus); round-trip `anonymize → restore` reproduces the input
+  exactly.
+
+- **DETECT-009** Optional surface-text biometric-mention detection. A new
+  opt-in regex rule (`BIOMETRIC_MENTION`) in
+  `src/anonymizer/detect/regex_rules.py` tokenises Russian biometric-data
+  descriptors — «отпечаток пальца», «голосовой отпечаток», «голосовая
+  модель», «ДНК», «генетические данные», «радужная оболочка [глаза]»,
+  «биометрические данные» — under a new narrow `Category.BIOMETRIC`
+  (`src/anonymizer/categories.py`). The rule is anchored on Cyrillic
+  word boundaries (so a stem cannot match inside a longer word) and is
+  case-insensitive. Default behaviour stays off — the mention itself is
+  descriptive, not identifying — opt-in via a new `Options.biometric_mentions`
+  flag (`src/anonymizer/api.py`) and a matching CLI flag
+  `--biometric-mentions`. Gating is done by a new `Rule.option_name` field;
+  `regex_rules.detect()` skips any rule whose gating attribute is falsy on
+  the passed `Options`, so the existing rule list and detection pipeline
+  stay unchanged when the flag is off. The rule-ordering snapshot
+  (`tests/test_rule_ordering.py`) is updated to include `BIOMETRIC_MENTION`
+  at the end of `RULES`, and the architecture-test category list is
+  extended. With the flag off the QA-001 corpus precision/recall is
+  bit-identical to the previous baseline (no biometric descriptors in the
+  corpus); round-trip `anonymize → restore` reproduces the input exactly.
+  Image / binary biometric payloads remain out-of-scope — this is text-only
+  by construction.
+
+- **DETECT-008** Document-declared alias propagation. A new
+  `_ALIAS_RE` regex in `src/anonymizer/detect/regex_rules.py` matches the
+  canonical Russian contract-alias shapes — `(далее — Х)`,
+  `(далее именуемый Х)`, `(далее по тексту — Х)`. After regex and NER
+  detection (and brand propagation), a new `_alias_propagate` pass in
+  `src/anonymizer/detect/__init__.py` finds each alias declaration, locates
+  the detected PERSON / ORG / LOC span immediately preceding the parenthesis
+  (within ~10 non-whitespace characters), and emits a new span at the alias
+  text site with the parent's category and `value=alias_text`. The
+  downstream consistency sweep then propagates that span to every later
+  word-bounded occurrence of the alias, so `ООО «Альфа-Бета» (далее —
+  Альфа). … Альфа поставляет товар.` tokenises every `Альфа` mention as
+  ORG, and `Иванов И.И. (далее именуемый Заказчик)` tokenises every
+  `Заказчик` mention as PERSON — overriding Natasha's ORG tag for that
+  word, because the alias declaration is the authoritative category for
+  that text. Filters: alias text shorter than 3 characters, alias text
+  containing `{{…}}` placeholders, and stoplisted alias text (country
+  names, generic nouns — same NER stoplist used by brand propagation) are
+  all skipped. Aliases with no detected parent span are left untokenized
+  by the alias pass (Natasha may still tag them independently). QA-001
+  corpus precision/recall unchanged (alias-declaration shape is not
+  exercised in the current labelled corpus); round-trip `anonymize →
+  restore` reproduces the input exactly.
+
+- **DETECT-007** Brand short-name propagation across the document. A new
+  propagation pass in `src/anonymizer/detect/__init__.py` (`_brand_propagate`)
+  narrows every legal-form ORG span (`ООО «Альфа-Бета»`, `ООО АСТРАЛ-СОФТ`,
+  full-spelling forms like `Общество с ограниченной ответственностью «Тест»`)
+  to its inner company short-name and then scans the document for every
+  word-bounded bare repeat of that short-name, adding it as an ORG span with
+  the inner-name value. `replace_spans` reuses one token across the
+  legal-form line and every later mention, so a document with one
+  `ООО «Альфа-Бета»` followed by three bare `Альфа-Бета` mentions tokenizes
+  all four occurrences to the same `{{ORG_1}}` and round-trip
+  `anonymize → restore` reproduces the input exactly (the literal
+  `ООО «...»` framing stays in the output). The reusable extractor lives in
+  `src/anonymizer/detect/regex_rules.py` as `extract_inner_org_name(value)`
+  — it strips the leading legal form, surrounding quotes, and a trailing
+  legal-form short word. A minimum inner-name length of 3 characters and a
+  reuse of the NER stoplist (`_lemma_key` against country names, generic
+  nouns, …) gate propagation so `ИТ` from `ООО «ИТ-Сервис»` does not match
+  inside `литер` and `Россия` from `ООО «Россия»` is not propagated to its
+  bare country mentions. New `Options.brand_propagation: bool = True` plus a
+  CLI `--brand-propagation` / `--no-brand-propagation` flag let callers opt
+  out; with propagation off the legal-form ORG span keeps its full value
+  (previous behaviour). `tests/corpus/02-company.json` updated to expect the
+  inner-name ORG value (`Рога и Копыта`); QA-001 ORG precision/recall stay
+  at 1.0/1.0 on the labelled corpus.
+
+- **DETECT-006** ФЗ-152 PII coverage audit against the canonical category list
+  in `../pdf c привт/TZ.md:80-146`. Triaged checklist now lives in
+  `docs/detect-006-fz152-coverage.md`, with every row marked **covered /
+  partial / missing / out-of-scope** plus file:line evidence. Five spawned
+  per-gap tasks added to `BACKLOG.md` Phase 7: **DETECT-009** (biometric
+  surface-text mentions, opt-in), **DETECT-010** (label-anchored ОМС / ДМС /
+  МКБ-10 / диагноз / история болезни), **DETECT-011** (БИК structural
+  validator), **DETECT-012** (optional family-relation labels), **DETECT-013**
+  (optional job-title and education-qualification labels). Out-of-scope items
+  (image / binary biometric data, photographs) recorded with one-line
+  rationale. No detection code changed in this ticket — implementation lives
+  in the spawned tasks.
+
+- **DETECT-005** Context-anchored single-surname detector for electronic-signature
+  blocks. A new `PERSON_SIGNATURE` rule in `src/anonymizer/detect/regex_rules.py`
+  fires when a signature-context label (`УКЭП`, `подписант`, `подписал`,
+  `подписавший`, `подписывающий`, `ФИО`, `фамилия`, `инициалы`, `подпись`) is
+  followed by `:`/`-`/`—` and a capitalised Cyrillic token of ≥3 letters
+  (e.g. `УКЭП: КРУГЛОВ`, `Подписант: Иванов`, `Подпись — Петрова`). Only the
+  surname is captured as the span; the label stays verbatim. The label
+  alternation is case-insensitive via an inline `(?i:…)` group, while the
+  surname class is case-sensitive so a lowercase common noun does not match.
+  Ordered after the CORE-005 patronymic-triple rule so a full ФИО after a
+  signature label (`подписант: ИВАНОВ ИВАН ИВАНОВИЧ`) is still captured as the
+  three-word person (the longer span wins overlap resolution in `_resolve`),
+  not just the surname. Rule-ordering snapshot in `tests/test_rule_ordering.py`
+  refreshed. Unit tests in `tests/test_detect.py` cover the three positive
+  separators, the full-ФИО overlap, two negative cases (`Город: Москва` and
+  `Подпись: АБ`), and a round-trip `anonymize → restore`. QA-001 corpus
+  precision/recall on PERSON is unchanged.
+
+- **UI-023** GitHub repository link in the main-window header. A small icon
+  button anchored at the trailing edge of a new header row opens the project
+  page in the user's default browser via `webbrowser.open`. The URL is read
+  from PEP 621 metadata (`importlib.metadata.metadata("pdf-md-anonymizer")`,
+  `Project-URL: Homepage, …`, with a `Home-page` fallback), so changing
+  `[project.urls] Homepage` in `pyproject.toml` and reinstalling redirects
+  the button without source-code edits. A monochrome GitHub Invertocat PNG
+  is shipped under `src/anonymizer_ui/resources/` (1× and 2× variants); the
+  button silently falls back to a "GitHub" text label if the icon cannot
+  load. Unit tests in `tests/test_ui.py` cover the metadata resolver's
+  Project-URL / Home-page / missing-package branches and assert the click
+  handler calls `webbrowser.open` with the resolved URL.
+- **UI-022** Main-window title now includes the running app version
+  (e.g. `"PDF-MD Anonymizer 0.1.0"`) so users with multiple builds installed
+  can tell at a glance which one is running. Version is sourced from
+  Toga/Briefcase's `self.version` (already populated from `pyproject.toml`)
+  with a fallback to `importlib.metadata.version("pdf-md-anonymizer")` and a
+  final fallback to the bare formal name. The macOS application-menu name
+  (Briefcase-controlled) is unchanged. Unit tests in `tests/test_ui.py`
+  cover the three branches of `_window_title()` and assert the title matches
+  the installed package version.
+
+### Fixed
+- **UI-021** Stage-progress log lines in the result view no longer concatenate
+  onto a single row. `BatchRunController._on_stage_update` now appends `\n`
+  when forwarding stage text to the `on_log` callback, matching the existing
+  file-result lines (`✓ file.pdf (Xs)\n` / `✗ file.pdf: error\n`). The
+  internal `_stage_text` used by `progress_text()` stays newline-free so the
+  single-line status label is unaffected. Unit test
+  `test_batch_controller_stage_log_is_newline_terminated` drives the
+  controller through CONVERTING → DETECTING and asserts every log line ends
+  with `\n` and that consecutive stage updates do not glue together.
+
+### Changed
+- **Complexity cleanup** Reduced cyclomatic complexity across the codebase
+  (radon / lizard / xenon). Two functions at radon rank C were refactored
+  via extract-function: `pdf_to_markdown` (CCN 11 → 4, split into
+  `_spawn_pdf2md` / `_wait_for_pdf2md`) and `_find_site_packages`
+  (CCN 12 → 8, split out `_resolve_via_shebang`). `AnonymizerApp.startup`
+  was decomposed from 137 lines / CCN 6 into five focused helpers
+  (`_build_main_layout`, `_register_global_commands`,
+  `_apply_initial_window_prefs`, `_install_macos_hooks`,
+  `_setup_pdf_controller`); `on_run` was flattened by extracting
+  `_ensure_pdf_backend_ready`.
+
+- **appkit_bridge package** Split the 831-line `appkit_bridge.py` into the
+  `appkit_bridge/` package: `_common`, `activation`, `pasteboard`,
+  `notifications`, `file_picker`, `status_icon`, `drag_drop`,
+  `global_hotkey`, `reopen_handler`, `accessibility`, `login_item`. The
+  public API is re-exported from `__init__.py`, so callers keep using
+  `from anonymizer_ui import appkit_bridge` and `appkit_bridge.X`. The
+  UI-009 architectural rule ("ObjCClass calls confined to one place") is
+  preserved at the package boundary; `test_objcclass_only_in_appkit_bridge`
+  updated accordingly. Test monkeypatches of private helpers
+  (`_macos_version_tuple`, `_register_via_swift`, …) now target the
+  submodule that owns them.
+
+- **pdf_backend package** Split the 525-line `pdf_backend.py` into the
+  `pdf_backend/` package: `_smoke` (smoke-test runner + minimal-PDF
+  generator), `_script_patch` (`pdf2md` shebang rewriter), and the rest
+  in `__init__.py`. Site-packages resolution stays in `__init__` so the
+  `pdf_backend._python_lib_tag` monkeypatch in tests keeps working.
+
+- **ner_helpers split** Extracted span-shape helpers and POS predicates
+  from `detect/ner.py` (500 LOC) into `detect/ner_helpers.py`. The
+  filter chain (`FILTERS` tuple + `SpanFilter` subclasses) and the
+  `NerPipeline` class stay in `ner.py` per the Phase-8 architectural
+  invariant. `ner.py` re-exports the helpers so test imports such as
+  `from anonymizer.detect.ner import _merge_hyphenated` keep working.
+
+- **clipboard_ops + main_window_layout** Extracted the clipboard/notify
+  flow (`run_anonymize_to_clipboard`, `read_clipboard`, `write_clipboard`,
+  `send_notification`) and the Toga widget construction
+  (`build_main_layout` returning a `MainWindowWidgets` dataclass) from
+  `app.py`. Three regression tests for the threaded anonymize path were
+  updated to call `clipboard_ops.run_anonymize_to_clipboard` directly
+  with explicit callbacks instead of monkeypatching an unbound method.
+
+### Fixed
+- **Briefcase create — docopt install** Vendored
+  `vendor/docopt-0.6.2-py2.py3-none-any.whl` and referenced it from
+  `[tool.briefcase.app.anonymizer-ui].requires`. pymorphy2 (transitive
+  dep of natasha) requires `docopt>=0.6`, but upstream docopt 0.6.2 ships
+  sdist-only on PyPI, which Briefcase's `--only-binary :all:` pip install
+  cannot fetch. The vendored wheel resolves the requirement from a local
+  path before pip queries PyPI. Pre-existing failure unrelated to the
+  complexity cleanup (same error in `logs/briefcase.2026_05_18-*.log`).
+
+### Added
+- **PDF-004** Batched `pdf2md` invocation: `convert.pdf_batch_to_markdown`
+  spawns **one** subprocess for a group of PDFs and streams per-file results
+  out through an `on_file` callback as each conversion finishes. The
+  Docling model loads once per group instead of once per file, so a 3-file
+  PDF batch costs roughly `init + N × per_file_convert` wall-clock instead
+  of `N × (init + per_file_convert)`. `batch.process_files` now groups
+  consecutive `.pdf` inputs into one `pdf_batch_to_markdown` call; a `.md`
+  input or end-of-list flushes the group. Per-file conversion failures are
+  reported via `on_file(path, exception)` and do not abort siblings;
+  `cancel()` between files kills the subprocess and keeps already-written
+  outputs. ADR-0002's subprocess boundary is preserved — the import of the
+  `pdf-to-markdown` package lives in a `-c` driver string executed in the
+  child process, never in `src/anonymizer/`. A `pdf2md` build with no
+  Python shebang or older builds without `create_docling_converter` fall
+  back to one subprocess per file. Public `pdf_to_markdown(path, …)`
+  signature unchanged. New ADR-0010.
+
+- **Complexity tooling** `radon`, `lizard`, `xenon`, `wily` added to the
+  `dev` extra. New `xenon` pre-commit hook
+  (`--max-absolute B --max-modules B --max-average A src/`) fails the
+  commit when any function lands at rank C or worse.
+
 - **DETECT-004** Regex detector for `@`-style nickname mentions. A new
   `NICKNAME` category and rule detect handles such as `@vasily`, `@john_doe`,
   and `@user-name`. The negative lookbehind `(?<!\w)` prevents matching the
@@ -517,3 +840,5 @@ All notable changes to this project are documented here.
   enumerating tool names in a stoplist.
 - ADR-0008: the desktop `.app` does not bundle `pdf2md` — the docling backend
   is installed on first PDF use into a user-writable dir — revises ADR-0005.
+- ADR-0010: `pdf2md` batch driver — one subprocess per PDF group, JSON
+  manifest stream over stdout, per-file Markdown in a temp directory.

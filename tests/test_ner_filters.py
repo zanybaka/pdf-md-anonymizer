@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import types
 
-import pytest
-
 from anonymizer.categories import Category
 from anonymizer.detect.ner import (
     FILTERS,
@@ -33,10 +31,7 @@ def _opts(**kw):
 
 def _span(pos_list):
     """Fake natasha span with tokens having given POS tags covering [0, 1)."""
-    tokens = [
-        types.SimpleNamespace(pos=pos, start=0, stop=1)
-        for pos in pos_list
-    ]
+    tokens = [types.SimpleNamespace(pos=pos, start=0, stop=1) for pos in pos_list]
     return types.SimpleNamespace(tokens=tokens)
 
 
@@ -63,26 +58,25 @@ def test_filter_ordering_snapshot():
 
 def test_category_routing_drops_org_when_disabled():
     f = _CategoryRouting()
-    assert f.keep(None, "Рога и Копыта", 0, 14, Category.ORG,
-                  _opts(ner_org=False), _ctx()) is False
+    assert f.keep(None, "Рога и Копыта", 0, 14, Category.ORG, _opts(ner_org=False), _ctx()) is False
 
 
 def test_category_routing_drops_loc_when_disabled():
     f = _CategoryRouting()
-    assert f.keep(None, "Москва", 0, 6, Category.LOC,
-                  _opts(ner_loc=False), _ctx()) is False
+    assert f.keep(None, "Москва", 0, 6, Category.LOC, _opts(ner_loc=False), _ctx()) is False
 
 
 def test_category_routing_keeps_person_regardless():
     f = _CategoryRouting()
-    assert f.keep(None, "Иванов", 0, 6, Category.PERSON,
-                  _opts(ner_org=False, ner_loc=False), _ctx()) is True
+    assert (
+        f.keep(None, "Иванов", 0, 6, Category.PERSON, _opts(ner_org=False, ner_loc=False), _ctx())
+        is True
+    )
 
 
 def test_category_routing_keeps_org_when_enabled():
     f = _CategoryRouting()
-    assert f.keep(None, "Рога и Копыта", 0, 14, Category.ORG,
-                  _opts(ner_org=True), _ctx()) is True
+    assert f.keep(None, "Рога и Копыта", 0, 14, Category.ORG, _opts(ner_org=True), _ctx()) is True
 
 
 # ---------------------------------------------------------------------------
@@ -116,29 +110,30 @@ def test_person_propn_passes_org_unconditionally():
 def test_org_loc_propn_drops_common_noun_org():
     f = _OrgLocPropn()
     span = _span(["NOUN"])
-    assert f.keep(span, "Канцелярия", 0, 10, Category.ORG,
-                  _opts(ner_pos_filter=True), _ctx()) is False
+    assert (
+        f.keep(span, "Канцелярия", 0, 10, Category.ORG, _opts(ner_pos_filter=True), _ctx()) is False
+    )
 
 
 def test_org_loc_propn_keeps_when_filter_disabled():
     f = _OrgLocPropn()
     span = _span(["NOUN"])
-    assert f.keep(span, "Вокруг", 0, 6, Category.ORG,
-                  _opts(ner_pos_filter=False), _ctx()) is True
+    assert f.keep(span, "Вокруг", 0, 6, Category.ORG, _opts(ner_pos_filter=False), _ctx()) is True
 
 
 def test_org_loc_propn_keeps_propn_org():
     f = _OrgLocPropn()
     span = _span(["PROPN"])
-    assert f.keep(span, "Газпром", 0, 7, Category.ORG,
-                  _opts(ner_pos_filter=True), _ctx()) is True
+    assert f.keep(span, "Газпром", 0, 7, Category.ORG, _opts(ner_pos_filter=True), _ctx()) is True
 
 
 def test_org_loc_propn_keeps_foreign_org():
     f = _OrgLocPropn()
     span = _span(["X"])
-    assert f.keep(span, "Deutsche Bank", 0, 13, Category.ORG,
-                  _opts(ner_pos_filter=True), _ctx()) is True
+    assert (
+        f.keep(span, "Deutsche Bank", 0, 13, Category.ORG, _opts(ner_pos_filter=True), _ctx())
+        is True
+    )
 
 
 # ---------------------------------------------------------------------------

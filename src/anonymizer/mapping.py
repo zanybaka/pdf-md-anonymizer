@@ -12,11 +12,13 @@ def dumps_map(mapping: dict[str, str]) -> str:
 
 
 def write_map(path: str | Path, mapping: dict[str, str]) -> None:
+    """Write a replacement map to *path* using :func:`dumps_map`'s format."""
     Path(path).write_text(dumps_map(mapping), encoding="utf-8")
 
 
 def load_map(path: str | Path) -> dict[str, str]:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    result: dict[str, str] = json.loads(Path(path).read_text(encoding="utf-8"))
+    return result
 
 
 def restore(text: str, mapping: dict[str, str]) -> str:

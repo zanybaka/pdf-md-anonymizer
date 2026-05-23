@@ -35,8 +35,7 @@ def load_corpus(corpus_dir: Path = CORPUS_DIR) -> list[dict]:
     """Load numbered corpus documents (``NN-*.json``) from the corpus directory."""
     return [
         json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(p for p in corpus_dir.glob("*.json")
-                           if p.stem[:2].isdigit())
+        for path in sorted(p for p in corpus_dir.glob("*.json") if p.stem[:2].isdigit())
     ]
 
 
@@ -61,8 +60,7 @@ def evaluate(corpus: list[dict], detect_fn=_default_detect) -> dict[str, dict]:
     for doc in corpus:
         expected = _pairs(doc["expected"])
         detected = _pairs(
-            {"category": s.category, "value": s.value}
-            for s in detect_fn(doc["text"])
+            {"category": s.category, "value": s.value} for s in detect_fn(doc["text"])
         )
         for (category, _value), count in detected.items():
             matched = min(count, expected.get((category, _value), 0))
@@ -87,8 +85,7 @@ def evaluate(corpus: list[dict], detect_fn=_default_detect) -> dict[str, dict]:
 
 def format_report(metrics: dict[str, dict]) -> str:
     """Render ``metrics`` as a fixed-width per-category table."""
-    header = f"{'category':<12}{'precision':>11}{'recall':>9}" \
-             f"{'tp':>6}{'fp':>6}{'fn':>6}"
+    header = f"{'category':<12}{'precision':>11}{'recall':>9}{'tp':>6}{'fp':>6}{'fn':>6}"
     lines = [header, "-" * len(header)]
     for category, m in metrics.items():
         lines.append(

@@ -46,25 +46,38 @@ python -m pytest -q                           # tests
 
 ## Packaging the desktop app
 
-`briefcase` is invoked via `uvx` — no install needed. `wheelhouse/` already
-ships the `docopt` wheel (sdist-only; Briefcase installs bundle deps with
-`--only-binary`).
+Wrappers around `uvx briefcase` live in `scripts/`. They handle the
+quirks (numpy `.so` codesign race, build/dist symlinks out of iCloud, DMG
+contents) so the day-to-day flow stays short:
 
 ```bash
-# Step 1 (one-time): scaffold the .app bundle and install its dependencies
-PIP_FIND_LINKS="$PWD/wheelhouse" uvx briefcase create macOS
-
-# Step 2: compile pdf-md-anonymizer.app  (default build task: Cmd+Shift+B)
-PIP_FIND_LINKS="$PWD/wheelhouse" uvx briefcase build macOS
-
-# Step 3 (optional): produce a distributable .dmg
-# Strip numpy .so signatures first — avoids a codesign race on .cstemp files:
-find ~/.briefcase-out/pdf-md-anonymizer/build -name '*.so' -path '*/numpy/*' \
-  -exec codesign --remove-signature {} \; 2>/dev/null; true
-PIP_FIND_LINKS="$PWD/wheelhouse" uvx briefcase package macOS
-
-# Launch the bundled app (auto-runs steps 1-2 if the bundle is missing)
-uvx briefcase run macOS
+bash scripts/build_app.sh   # briefcase create (once) + briefcase build
+bash scripts/build_dmg.sh   # build_app.sh + ad-hoc sign + hdiutil → dist/*.dmg
+bash scripts/run_app.sh     # open the built .app (builds it if missing)
 ```
 
-All four steps are also available as VS Code tasks (`.vscode/tasks.json`).
+The `[pdf]` extra is **not** bundled in the `.app` (ADR-0008); pdf2md installs
+itself into the bundle on first PDF use. The `docopt` wheel needed at bundle
+build time is referenced directly from `vendor/` via `pyproject.toml`, so no
+`PIP_FIND_LINKS` is required.
+
+Release procedure (tag → CI builds DMG → GitHub Release) is documented in
+[DEPLOYMENT.md](DEPLOYMENT.md). Equivalent VS Code tasks are in
+`.vscode/tasks.json`.
+
+## Code quality maintenance
+
+Periodic audits via Claude Code slash commands (skills from
+`l-mb/python-refactoring-skills`). Order matters:
+`py-quality-setup → py-security → py-code-health → py-test-quality → py-git-hooks`.
+
+| Skill | Purpose | When to run |
+|---|---|---|
+| `/py-security` | bandit audit for OWASP-class vulnerabilities | Each sprint or before a release. `ruff` covers most checks on every commit; bandit catches the rest. |
+| `/py-code-health` | `vulture` for dead code, `pylint --enable=duplicate-code` for duplicates | Wired into pre-commit (vulture). Pylint duplicate-code by hand when refactoring. |
+| `/py-test-quality` | Real coverage (`pytest-cov`) + mutation testing (`mutmut`) | Coverage: each push (CI). mutmut: quarterly on hot modules (`src/anonymizer/detect/`, `mapping.py`). |
+| `/py-complexity` | Cyclomatic/cognitive complexity — primary target is the NER pipeline in `src/anonymizer/detect/ner.py` | When NER pipeline gains a new stage or a file crosses ~500 LOC. |
+
+bandit, coverage, and mutmut are deliberately **not** in pre-commit — they are
+either redundant with existing ruff rules (bandit) or too slow for a per-commit
+hook (coverage, mutmut). Run via the skill or in CI.

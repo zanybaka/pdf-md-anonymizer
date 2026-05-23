@@ -2,6 +2,12 @@
 
 Overrides and additions to the shared AGENTS.md for this repository only.
 
+## Skill Routing (project-only)
+
+- Use "bump-version" when changing the project version — keeps `pyproject.toml`
+  (`[project]` + `[tool.briefcase]`) and `src/anonymizer/__init__.py` in sync.
+  See `.claude/skills/bump-version/SKILL.md`.
+
 ## Detection Module Invariants
 
 These are not enforced by tests — agent must apply them manually.
@@ -26,3 +32,17 @@ These are not enforced by tests — agent must apply them manually.
   `src/anonymizer/detect/regex_rules.py` must update the snapshot in
   `tests/test_rule_ordering.py`. Earlier rules win on overlap — re-ordering is a
   detection behaviour change, not a refactor.
+
+## Release-bundle license invariant
+
+- When `pyproject.toml` `[tool.briefcase.app.anonymizer-ui].requires` changes,
+  **or** a transitive dependency moves into / out of the `.app`, reconcile
+  `Third party notices.txt` against the canonical bundle listing:
+
+  ```bash
+  bash scripts/list_bundle_packages.sh
+  ```
+
+  Every package in that output must appear in `Third party notices.txt` with
+  the right version and license. The DMG ships the notices file at its root —
+  missing transitive packages are a compliance gap.

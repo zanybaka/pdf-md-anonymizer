@@ -12,6 +12,11 @@ macOS
 AGENTS.md
 /uv.lock
 
+# Coverage and mutation testing artefacts
+.coverage
+htmlcov/
+.mutmut-cache
+
 # Anonymizer outputs and replacement maps must never be committed (may contain PII).
 *.map.json
 samples/**/*.md

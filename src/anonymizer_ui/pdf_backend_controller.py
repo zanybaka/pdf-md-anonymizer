@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Callable
-from pathlib import Path
 
 
 class PdfBackendController:
@@ -47,6 +46,7 @@ class PdfBackendController:
     def refresh_row(self) -> None:
         """Update the version label and action button to reflect current state."""
         from anonymizer_ui import pdf_backend  # noqa: PLC0415
+
         installed = pdf_backend.is_installed()
         ver = pdf_backend.installed_version() if installed else None
         if installed:
@@ -65,11 +65,10 @@ class PdfBackendController:
         a repair thread is running).
         """
         from anonymizer_ui import pdf_backend  # noqa: PLC0415
+
         if pdf_backend.needs_setuptools_repair():
             self._setuptools_ready.clear()
-            threading.Thread(
-                target=self._repair_setuptools, daemon=True
-            ).start()
+            threading.Thread(target=self._repair_setuptools, daemon=True).start()
         return self._setuptools_ready
 
     # --- run action (install / update) ----------------------------------
@@ -97,15 +96,14 @@ class PdfBackendController:
         def _work() -> None:
             try:
                 from anonymizer_ui import pdf_backend as _pb  # noqa: PLC0415
+
                 if upgrade:
                     _pb.update(on_line=_on_line)
                 else:
                     _pb.install(on_line=_on_line)
                 success_box[0] = True
             except Exception as exc:  # noqa: BLE001
-                loop.call_soon_threadsafe(
-                    self._on_log, f"\n{verb} failed: {exc}\n"
-                )
+                loop.call_soon_threadsafe(self._on_log, f"\n{verb} failed: {exc}\n")
             finally:
                 loop.call_soon_threadsafe(done.set)
 
@@ -125,8 +123,9 @@ class PdfBackendController:
     def _repair_setuptools(self) -> None:
         try:
             from anonymizer_ui import pdf_backend  # noqa: PLC0415
+
             pdf_backend.ensure_setuptools()
-        except Exception:
+        except Exception:  # noqa: S110
             pass
         finally:
             self._setuptools_ready.set()

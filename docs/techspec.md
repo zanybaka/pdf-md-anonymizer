@@ -46,6 +46,11 @@ tests/
 - NER detects PERSON, ORG, and LOC; all three are tokenized by default for
   maximum private-data removal. `--no-ner-org` / `--no-ner-loc` opt out.
 - CARD additionally validated with the Luhn checksum to cut false positives.
+- A brand short-name propagation pass narrows each legal-form ORG span
+  (`ООО «Альфа-Бета»`, `ООО АСТРАЛ-СОФТ`) to its inner company name and adds
+  every word-bounded bare repeat of that short-name as an ORG span sharing
+  the same token; `--no-brand-propagation` disables it. Stoplisted inner
+  names (country names, generic nouns) are not propagated.
 - A consistency sweep then propagates every detected value to its other
   word-bounded occurrences, closing NER recall gaps; `--no-consistency-sweep`
   disables it.
@@ -60,7 +65,8 @@ tests/
 ## CLI
 ```
 anon INPUT... [-o OUT] [--map MAP] [--no-ner-org] [--no-ner-loc]
-              [--no-consistency-sweep] [--llm] [--pdf2md-cmd CMD]
+              [--no-consistency-sweep] [--no-brand-propagation]
+              [--llm] [--pdf2md-cmd CMD]
 anon restore INPUT --map MAP [-o OUT]
 ```
 - INPUT extension `.pdf` triggers conversion; otherwise treated as Markdown.

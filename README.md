@@ -68,15 +68,19 @@ The detection pipeline runs these stages in order:
 ## Desktop app
 
 A Toga desktop UI (`anonymizer_ui`) wraps the same core in-process — pick one or
-many files, set options, run, and watch live per-file progress. Build a macOS
-`.app` with Briefcase via `uvx` (no install needed); `wheelhouse/` ships the
-required `docopt` wheel:
+many files, set options, run, and watch live per-file progress.
+
+![PDF-MD Anonymizer main window](docs/screenshots/app-main.png)
+
+Build a macOS `.app` / `.dmg`:
 
 ```bash
-PIP_FIND_LINKS="$PWD/wheelhouse" uvx briefcase create macOS   # one-time setup
-PIP_FIND_LINKS="$PWD/wheelhouse" uvx briefcase build macOS
-PIP_FIND_LINKS="$PWD/wheelhouse" uvx briefcase package macOS
+bash scripts/build_app.sh   # ~/.briefcase-out/.../PDF-MD Anonymizer.app
+bash scripts/build_dmg.sh   # dist/PDF-MD Anonymizer-<version>.dmg
+bash scripts/run_app.sh     # launch the built .app
 ```
+
+Release procedure is in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Notes
 

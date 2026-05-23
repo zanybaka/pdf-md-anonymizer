@@ -1,0 +1,60 @@
+Third-Party Notices
+===================
+
+pdf-md-anonymizer is licensed under the MIT License. See LICENSE for the
+project license.
+
+The macOS app bundle and DMG include third-party open-source components
+listed below. All are permissive (MIT / BSD-3-Clause / Apache-2.0) and
+compatible with the project's MIT license.
+
+NOTE FOR MAINTAINERS / AI AGENTS
+--------------------------------
+This list must mirror what is actually shipped in the .app bundle. After any
+dependency change (briefcase requires, transitive bumps), regenerate the
+canonical list with:
+
+    bash scripts/list_bundle_packages.sh
+
+and reconcile any new lines into this file before tagging a release. The
+release-flow checklist in DEPLOYMENT.md repeats this requirement.
+
+Project Natasha (Russian NLP stack)
+-----------------------------------
+natasha             1.6.0   MIT   https://github.com/natasha/natasha
+navec               0.10.0  MIT   https://github.com/natasha/navec
+slovnet             0.6.0   MIT   https://github.com/natasha/slovnet
+razdel              0.5.0   MIT   https://github.com/natasha/razdel
+yargy               0.16.0  MIT   https://github.com/natasha/yargy
+ipymarkup           0.9.0   MIT   https://github.com/natasha/ipymarkup
+
+pymorphy2 stack (Russian morphology)
+------------------------------------
+pymorphy2           0.9.1                  MIT   https://github.com/kmike/pymorphy2
+pymorphy2-dicts-ru  2.4.417127.4579844     MIT   https://github.com/kmike/pymorphy2-dicts
+DAWG-Python         0.7.2                  MIT   https://github.com/kmike/DAWG-Python
+
+Numerical / data structures
+---------------------------
+numpy               2.4.6   BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
+                            https://numpy.org/
+intervaltree        3.2.1   Apache-2.0      https://github.com/chaimleib/intervaltree
+sortedcontainers    2.4.0   Apache-2.0      http://www.grantjenks.com/docs/sortedcontainers/
+
+BeeWare UI stack (Toga + native bridge)
+---------------------------------------
+toga-core           0.5.4   BSD-3-Clause    https://beeware.org/project/projects/libraries/toga/
+toga-cocoa          0.5.4   BSD-3-Clause    https://beeware.org/project/projects/libraries/toga/
+travertino          0.5.4   BSD-3-Clause    https://beeware.org/travertino
+rubicon-objc        0.5.4   BSD-3-Clause    https://beeware.org/rubicon
+std-nslog           1.0.3   BSD-3-Clause    https://github.com/beeware/std-nslog
+
+Other runtime dependencies
+--------------------------
+docopt              0.6.2   MIT             http://docopt.org
+fonttools           4.63.0  MIT             https://github.com/fonttools/fonttools
+setuptools          82.0.1  MIT             https://github.com/pypa/setuptools
+
+docopt's upstream sdist is vendored as a locally built wheel in `vendor/`
+because Briefcase installs bundle dependencies with `--only-binary :all:`.
+setuptools is bundled because pymorphy2 imports `pkg_resources` at runtime.

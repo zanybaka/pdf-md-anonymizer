@@ -1,4 +1,5 @@
 """Tests for the Category StrEnum (CORE-006)."""
+
 from anonymizer.categories import Category
 
 
@@ -14,4 +15,4 @@ def test_token_format():
 
 
 def test_all_members():
-    assert len(Category) == 21
+    assert len(Category) == 24

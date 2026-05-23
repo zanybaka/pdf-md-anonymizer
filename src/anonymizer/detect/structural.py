@@ -28,17 +28,14 @@ def skill_section_ranges(text: str) -> list[tuple[int, int]]:
     shallower depth, or to the end of the text. ``ORG``/``LOC`` spans starting
     inside any returned range are dropped — see ADR-0007.
     """
-    headers = [
-        (m.start(), len(m.group(1)), m.group(2))
-        for m in _HEADER_RE.finditer(text)
-    ]
+    headers = [(m.start(), len(m.group(1)), m.group(2)) for m in _HEADER_RE.finditer(text)]
     ranges: list[tuple[int, int]] = []
     for i, (pos, depth, title) in enumerate(headers):
         folded = title.casefold()
         if not any(stem in folded for stem in RESUME_SKILL_SECTION_STEMS):
             continue
         end = len(text)
-        for next_pos, next_depth, _title in headers[i + 1:]:
+        for next_pos, next_depth, _title in headers[i + 1 :]:
             if next_depth <= depth:
                 end = next_pos
                 break

@@ -86,8 +86,7 @@ def test_batch_extension_preserving_names(tmp_path, monkeypatch):
     (tmp_path / "a.pdf").write_text("petr@example.ru", encoding="utf-8")
     outdir = tmp_path / "out"
     code = run(
-        [str(tmp_path / "a.md"), str(tmp_path / "a.pdf"),
-         "-o", str(outdir), "--pdf2md-cmd", "cat"],
+        [str(tmp_path / "a.md"), str(tmp_path / "a.pdf"), "-o", str(outdir), "--pdf2md-cmd", "cat"],
         monkeypatch,
     )
     assert code == 0
@@ -103,8 +102,7 @@ def test_batch_explicit_map_dir_written(tmp_path, monkeypatch):
     outdir = tmp_path / "out"
     mapdir = tmp_path / "maps"
     code = run(
-        [str(tmp_path / "a.md"), str(tmp_path / "b.md"),
-         "-o", str(outdir), "--map", str(mapdir)],
+        [str(tmp_path / "a.md"), str(tmp_path / "b.md"), "-o", str(outdir), "--map", str(mapdir)],
         monkeypatch,
     )
     assert code == 0

@@ -28,6 +28,7 @@ def setup(
     *on_error* receives error messages if drag operation fails unexpectedly.
     Returns the overlay object — caller must hold a reference to keep it alive.
     """
+
     def _filtered(raw_paths: list[str]) -> None:
         accepted = [Path(p) for p in raw_paths if Path(p).suffix.lower() in _ACCEPT_EXTS]
         if accepted:

@@ -8,31 +8,39 @@ are delivered back to the event loop as they complete.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import importlib.metadata
 import json
 import shutil
 import subprocess
 import threading
-import time
 import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 
 import toga
-from toga.style.pack import COLUMN, ROW, Pack
 
 from anonymizer.api import Options
-from anonymizer.batch import CancelToken, FileStatus, OutputPolicy, process_files
+from anonymizer.batch import FileStatus, OutputPolicy, process_files  # noqa: F401
 from anonymizer.convert import default_pdf2md_command
-from anonymizer_ui import appkit_bridge
-from anonymizer_ui import drag_drop_overlay
+from anonymizer_ui import appkit_bridge, clipboard_ops, drag_drop_overlay
 from anonymizer_ui.batch_controller import BatchRunController
+from anonymizer_ui.main_window_layout import build_main_layout
 from anonymizer_ui.menubar_controller import MenuBarController
 from anonymizer_ui.pdf_backend_controller import PdfBackendController
 
 _PENDING = "pending"
 
+# Last-resort fallback for the project repo URL. Same value as
+# ``[project.urls] Homepage`` and ``[tool.briefcase].url`` in pyproject.toml;
+# kept here so the GitHub click always works even when neither the package
+# metadata nor the bundle's Info.plist surfaces the URL (real bug observed
+# in bundled .apps where Briefcase did not refresh Info.plist on rebuild).
+_REPO_URL_FALLBACK = "https://github.com/zanybaka/pdf-md-anonymizer"
+
 _SUPPORT_DIR = Path("~/Library/Application Support/pdf-md-anonymizer").expanduser()
 _PREFS_FILE = _SUPPORT_DIR / "prefs.json"
+
 
 def _load_prefs() -> dict:
     try:
@@ -44,6 +52,31 @@ def _load_prefs() -> dict:
 def _save_prefs(prefs: dict) -> None:
     _SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     _PREFS_FILE.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+
+
+def _resolve_app_version() -> str:
+    """Resolve the running app's version string, across dev and bundled .app.
+
+    Order:
+      1. ``importlib.metadata`` — works for ``pip install -e .`` / ``uv tool
+         install`` (the dev install ships ``pdf-md-anonymizer-*.dist-info/``).
+      2. NSBundle's ``CFBundleShortVersionString`` — the canonical version
+         inside a Briefcase ``.app`` bundle, where the package is shipped as
+         plain source files (no ``dist-info/``) and ``importlib.metadata``
+         raises ``PackageNotFoundError``. Briefcase writes the value from
+         ``pyproject.toml`` ``[tool.briefcase] version``.
+    Returns empty string when neither source is available; callers treat that
+    as "skip the version suffix" rather than crash.
+    """
+    with contextlib.suppress(Exception):
+        v = importlib.metadata.version("pdf-md-anonymizer").strip()
+        if v:
+            return v
+    with contextlib.suppress(appkit_bridge.AppKitError):
+        v = appkit_bridge.main_bundle_short_version()
+        if v:
+            return v
+    return ""
 
 
 def _pdf2md_available() -> bool:
@@ -68,76 +101,112 @@ class AnonymizerApp(toga.App):
         self._menubar = MenuBarController(self)
         self._output_dir: Path | None = None
 
-        root = toga.Box(style=Pack(direction=COLUMN, margin=10, gap=8))
-
-        file_row = toga.Box(style=Pack(direction=ROW, gap=6))
-        file_row.add(toga.Button("Add files…", on_press=self.on_add_files))
-        file_row.add(toga.Button("Clear", on_press=self.on_clear))
-        file_row.add(toga.Button("Output folder…", on_press=self.on_pick_output))
-        root.add(file_row)
-
-        self.output_label = toga.Label("Output: next to each input file")
-        root.add(self.output_label)
-
-        self.map_switch = toga.Switch("Save replacement map", value=False)
-        root.add(self.map_switch)
-
         prefs = _load_prefs()
-        self.menubar_switch = toga.Switch(
-            "Stay in menu bar when window is closed",
-            value=prefs.get("stay_in_menubar", False),
-            on_change=self._on_menubar_pref_change,
-        )
-        root.add(self.menubar_switch)
-
-        self.table = toga.Table(
-            columns=["File", "Status"],
-            data=[],
-            style=Pack(flex=1),
-            on_activate=self.on_table_activate,
-            on_select=self.on_table_select,
-        )
-        root.add(self.table)
-
-        self.progress = toga.ProgressBar(max=1, value=0, style=Pack(flex=1))
-        root.add(self.progress)
-        self.status_label = toga.Label("Idle")
-        root.add(self.status_label)
-
-        run_row = toga.Box(style=Pack(direction=ROW, gap=6))
-        self.run_button = toga.Button("Run", on_press=self.on_run)
-        self.cancel_button = toga.Button(
-            "Cancel", on_press=self.on_cancel, enabled=False
-        )
-        self.reveal_button = toga.Button(
-            "Reveal in Finder", on_press=self.on_reveal, enabled=False
-        )
-        self.copy_button = toga.Button(
-            "Copy", on_press=self.on_copy, enabled=False
-        )
-        run_row.add(self.run_button)
-        run_row.add(self.cancel_button)
-        run_row.add(self.reveal_button)
-        run_row.add(self.copy_button)
-        root.add(run_row)
-
-        self.result_view = toga.MultilineTextInput(
-            readonly=True, style=Pack(flex=1)
-        )
-        root.add(self.result_view)
-
-        pdf_row = toga.Box(style=Pack(direction=ROW, gap=6))
-        self.pdf_version_label = toga.Label("")
-        self.pdf_action_button = toga.Button(
-            "Install PDF backend", on_press=self.on_pdf_action
-        )
-        pdf_row.add(self.pdf_version_label)
-        pdf_row.add(self.pdf_action_button)
-        root.add(pdf_row)
-
-        self.main_window = toga.MainWindow(title=self.formal_name)
+        root = self._build_main_layout(prefs)
+        self.main_window = toga.MainWindow(title=self._window_title())
         self.main_window.content = root
+        self.main_window.on_close = self._on_window_close
 
+        self._register_global_commands()
+        self._apply_initial_window_prefs(prefs)
+        self._install_macos_hooks()
+        self._setup_pdf_controller()
+
+        self._make_primary_button(self.run_button)
+        self._setup_drag_drop()
+        threading.Thread(target=self._warmup_ner, daemon=True).start()
+
+    def _window_title(self) -> str:
+        """Return the main-window title, including the running app version.
+
+        Tries ``self.version`` (Toga/Briefcase) first, then a shared resolver
+        that covers both the dev install (``importlib.metadata``) and the
+        bundled ``.app`` (NSBundle ``CFBundleShortVersionString``). Falls
+        back to the bare ``formal_name`` when no version is resolvable.
+        """
+        version = ""
+        with contextlib.suppress(Exception):
+            version = (getattr(self, "version", "") or "").strip()
+        if not version:
+            version = _resolve_app_version()
+        if version:
+            return f"{self.formal_name} {version}"
+        return self.formal_name
+
+    @staticmethod
+    def _repository_url() -> str:
+        """Resolve the project repository URL.
+
+        Order:
+          1. ``importlib.metadata`` PEP 621 ``[project.urls] Homepage`` (the
+             dev install ships dist-info with this).
+          2. Older ``Home-page`` metadata field.
+          3. NSBundle ``ProjectHomepageURL`` from the bundle's ``Info.plist``
+             — the canonical source inside a Briefcase ``.app``, where the
+             package ships as plain source (no ``dist-info/``) and
+             ``importlib.metadata`` raises ``PackageNotFoundError``. The key
+             is declared under ``[tool.briefcase.app.X.macOS].info_plist``
+             in pyproject.toml.
+        Returns empty string when no source is available; callers treat that
+        as "do nothing" so a packaging regression never crashes the UI.
+        """
+        try:
+            md = importlib.metadata.metadata("pdf-md-anonymizer")
+            for raw in md.get_all("Project-URL") or []:
+                label, _, url = raw.partition(",")
+                if label.strip().lower() == "homepage" and url.strip():
+                    return url.strip()
+            home_page = (md.get("Home-page") or "").strip()
+            if home_page:
+                return home_page
+        except importlib.metadata.PackageNotFoundError:
+            pass
+        with contextlib.suppress(appkit_bridge.AppKitError):
+            url = appkit_bridge.main_bundle_info_string("ProjectHomepageURL")
+            if url:
+                return url
+        return _REPO_URL_FALLBACK
+
+    async def _on_open_repository(self, widget) -> None:
+        """Open the project repository in the user's default browser.
+
+        Uses NSWorkspace inside the Briefcase ``.app`` (``webbrowser.open``
+        has been observed to silently no-op there) with a stdlib fallback
+        for non-macOS Toga backends. Async because every other on_press
+        handler in this app is async; Toga's button dispatch would not
+        await a sync handler. No-op when the URL is empty (partial install).
+        """
+        url = self._repository_url()
+        if not url:
+            self._log("GitHub: no repository URL in package metadata")
+            return
+        try:
+            appkit_bridge.open_url(url)
+        except appkit_bridge.AppKitError as exc:
+            self._log(f"GitHub: NSWorkspace failed ({exc}); falling back to webbrowser")
+            webbrowser.open(url)
+
+    def _build_main_layout(self, prefs: dict) -> toga.Box:
+        """Construct the root layout and bind widget references on ``self``."""
+        root, widgets = build_main_layout(self, prefs)
+        self.output_label = widgets.output_label
+        self.map_switch = widgets.map_switch
+        self.menubar_switch = widgets.menubar_switch
+        self.table = widgets.table
+        self.progress = widgets.progress
+        self.status_label = widgets.status_label
+        self.run_button = widgets.run_button
+        self.cancel_button = widgets.cancel_button
+        self.reveal_button = widgets.reveal_button
+        self.copy_button = widgets.copy_button
+        self.result_view = widgets.result_view
+        self.pdf_version_label = widgets.pdf_version_label
+        self.pdf_action_button = widgets.pdf_action_button
+        self.github_button = widgets.github_button
+        self.add_files_button = widgets.add_files_button
+        return root
+
+    def _register_global_commands(self) -> None:
         self.commands.add(
             toga.Command(
                 self._on_paste_files,
@@ -146,13 +215,13 @@ class AnonymizerApp(toga.App):
                 group=toga.Group.EDIT,
             ),
             toga.Command(
-                lambda _: webbrowser.open("https://github.com/zanybaka/pdf-md-anonymizer"),
+                self._on_open_repository,
                 text="View on GitHub",
                 group=toga.Group.HELP,
             ),
         )
 
-        self.main_window.on_close = self._on_window_close
+    def _apply_initial_window_prefs(self, prefs: dict) -> None:
         # Suppress the main window when launched at login (launch_at_login
         # pref is True).  SMAppService on macOS 13+ cannot pass CLI args, so
         # we cannot rely on --background being in sys.argv.  Checking the pref
@@ -160,13 +229,24 @@ class AnonymizerApp(toga.App):
         if not prefs.get("launch_at_login", False):
             self.main_window.show()
 
+            # Put initial keyboard focus on "Add files…" — the most common
+            # first action. Toga's ``focus()`` is a hint the AppKit backend
+            # often ignores when the window's NSWindow already chose its own
+            # initial first responder (header button, in our layout). Force
+            # it via NSWindow.makeFirstResponder_; deferred a bit so the
+            # call lands after the window is fully on screen.
+            def _set_initial_focus() -> None:
+                with contextlib.suppress(appkit_bridge.AppKitError):
+                    appkit_bridge.make_first_responder(self.add_files_button)
+
+            with contextlib.suppress(Exception):
+                self.loop.call_later(0.1, _set_initial_focus)
+
         if prefs.get("stay_in_menubar", False):
             self._menubar.create_status_item()
             # Toga builds NSMenu after startup() returns; defer checkmark sync.
-            try:
+            with contextlib.suppress(Exception):
                 self.loop.call_soon(self._menubar._sync_launch_at_login_checkmark)
-            except Exception:
-                pass
 
         # Apply Stay-lock if Launch at Login is enabled (keeps Stay forced ON
         # and greyed out while the login item is registered).
@@ -179,6 +259,7 @@ class AnonymizerApp(toga.App):
             except appkit_bridge.AppKitError as exc:
                 self._log(str(exc))
 
+    def _install_macos_hooks(self) -> None:
         # Show the main window when the user re-launches the app while it's
         # already running in the menu bar (Finder double-click / Spotlight).
         try:
@@ -186,7 +267,7 @@ class AnonymizerApp(toga.App):
         except appkit_bridge.AppKitError as exc:
             self._log(f"reopen handler not installed: {exc}")
 
-        # Set up PDF backend controller (needs widget refs to be ready)
+    def _setup_pdf_controller(self) -> None:
         self._pdf_ctrl = PdfBackendController(
             on_version_label=lambda t: setattr(self.pdf_version_label, "text", t),
             on_action_button=lambda t, e: (
@@ -201,10 +282,6 @@ class AnonymizerApp(toga.App):
         )
         self._pdf_ctrl.refresh_row()
         self._setuptools_ready = self._pdf_ctrl.start_setuptools_repair_if_needed()
-
-        self._make_primary_button(self.run_button)
-        self._setup_drag_drop()
-        threading.Thread(target=self._warmup_ner, daemon=True).start()
 
     # --- forwarding properties (backward compat with SimpleNamespace tests) -
 
@@ -245,22 +322,14 @@ class AnonymizerApp(toga.App):
 
     def _log(self, msg: str) -> None:
         """Append a line to the result view (UI-thread safe, best-effort)."""
-        try:
+        with contextlib.suppress(Exception):
             self._prepend_to_result(f"[app] {msg}\n")
-        except Exception:
-            pass
 
     def _hide_to_menubar(self) -> None:
         self._menubar.hide_window_to_menubar()
 
     def _show_main_window(self, *args, **kwargs) -> None:
         self._menubar.show_main_window()
-
-    def _create_status_item(self) -> None:
-        self._menubar.create_status_item()
-
-    def _remove_status_item(self) -> None:
-        self._menubar.remove_status_item()
 
     def _cmd_anon_file_to_clipboard(self, command, **kwargs) -> None:
         try:
@@ -282,7 +351,7 @@ class AnonymizerApp(toga.App):
             return
         await self._do_anon_file_to_clipboard(path)
 
-    def _pick_file_and_restore_policy(self, title: str) -> "Path | None":
+    def _pick_file_and_restore_policy(self, title: str) -> Path | None:
         try:
             return appkit_bridge.pick_file(title, ["pdf", "md"])
         except appkit_bridge.AppKitError as exc:
@@ -297,20 +366,17 @@ class AnonymizerApp(toga.App):
 
     async def _do_anon_file_to_clipboard(self, path: Path) -> None:
         from anonymizer.batch import read_input  # noqa: PLC0415
-        await self._anonymize_in_thread(
+
+        await self._run_anonymize(
             source=lambda: read_input(path),
-            busy_title="Anonymizing…",
             busy_body=path.name,
-            done_title="Anonymized to clipboard",
             done_body=path.name,
         )
 
     async def _anon_clipboard_to_clipboard(self) -> None:
-        await self._anonymize_in_thread(
-            source=lambda: self._read_clipboard() or "",
-            busy_title="Anonymizing…",
+        await self._run_anonymize(
+            source=lambda: clipboard_ops.read_clipboard() or "",
             busy_body="Clipboard text",
-            done_title="Anonymized to clipboard",
             done_body="Clipboard text anonymized",
         )
 
@@ -319,75 +385,43 @@ class AnonymizerApp(toga.App):
 
         Wired to the global ⌃⌥⌘C hotkey: works in any focused app.
         """
-        before = self._read_clipboard() or ""
+        before = clipboard_ops.read_clipboard() or ""
         try:
             appkit_bridge.send_cmd_c()
         except appkit_bridge.AppKitError as exc:
-            self._send_notification("Cmd+C failed", str(exc)[:120])
+            clipboard_ops.send_notification("Cmd+C failed", str(exc)[:120])
             return
         # Give the OS a moment to update the pasteboard from the foreign app.
         await asyncio.sleep(0.15)
-        after = self._read_clipboard() or ""
+        after = clipboard_ops.read_clipboard() or ""
         if after == before:
-            self._send_notification("No text selected", "Select text first, then press ⌃⌥⌘C")
+            clipboard_ops.send_notification(
+                "No text selected", "Select text first, then press ⌃⌥⌘C"
+            )
             return
-        await self._anonymize_in_thread(
+        await self._run_anonymize(
             source=lambda: after,
-            busy_title="Anonymizing…",
             busy_body="Selected text",
-            done_title="Anonymized to clipboard",
             done_body="Selection anonymized — paste with ⌘V",
         )
 
-    async def _anonymize_in_thread(
+    async def _run_anonymize(
         self,
         *,
         source: Callable[[], str],
-        busy_title: str,
         busy_body: str,
-        done_title: str,
         done_body: str,
     ) -> None:
-        self._send_notification(busy_title, busy_body)
-        self._begin_busy()
-        try:
-            loop = self.loop
-            result_box: list[str | None] = [None]
-            error_box: list[str | None] = [None]
-            empty_box: list[bool] = [False]
-            done_event = asyncio.Event()
-
-            def _work() -> None:
-                try:
-                    text = source()
-                    if not text:
-                        empty_box[0] = True
-                        return
-                    from anonymizer.api import anonymize, Options  # noqa: PLC0415
-                    result_box[0] = anonymize(text, Options()).text
-                except Exception as exc:  # noqa: BLE001
-                    error_box[0] = str(exc)
-                finally:
-                    loop.call_soon_threadsafe(done_event.set)
-
-            threading.Thread(target=_work, daemon=True).start()
-            await done_event.wait()
-
-            if empty_box[0]:
-                self._send_notification("Clipboard is empty", "No text found to anonymize")
-            elif error_box[0]:
-                self._send_notification("Anonymization failed", error_box[0][:120])
-            else:
-                self._copy_to_clipboard(result_box[0] or "")
-                self._send_notification(done_title, done_body)
-        finally:
-            self._end_busy()
-
-    def _send_notification(self, title: str, body: str) -> None:
-        try:
-            appkit_bridge.deliver_notification(title, body)
-        except appkit_bridge.AppKitError:
-            pass
+        await clipboard_ops.run_anonymize_to_clipboard(
+            source=source,
+            loop=self.loop,
+            on_busy_begin=self._begin_busy,
+            on_busy_end=self._end_busy,
+            busy_title="Anonymizing…",
+            busy_body=busy_body,
+            done_title="Anonymized to clipboard",
+            done_body=done_body,
+        )
 
     # --- file selection -------------------------------------------------
 
@@ -429,9 +463,7 @@ class AnonymizerApp(toga.App):
         self.copy_button.enabled = False
 
     async def on_pick_output(self, widget) -> None:
-        folder = await self.main_window.dialog(
-            toga.SelectFolderDialog("Select output folder")
-        )
+        folder = await self.main_window.dialog(toga.SelectFolderDialog("Select output folder"))
         if folder:
             self._output_dir = Path(folder)
             self.output_label.text = f"Output: {self._output_dir}"
@@ -464,10 +496,8 @@ class AnonymizerApp(toga.App):
 
     @staticmethod
     def _make_primary_button(button: toga.Button) -> None:
-        try:
+        with contextlib.suppress(AttributeError):
             button._impl.native.keyEquivalent = "\r"
-        except AttributeError:
-            pass
 
     def _warmup_ner(self) -> None:
         self.loop.call_soon_threadsafe(self._on_warmup_start)
@@ -477,8 +507,9 @@ class AnonymizerApp(toga.App):
 
         try:
             from anonymizer.detect.ner import warmup  # noqa: PLC0415
+
             warmup(on_step=on_step)
-        except Exception:
+        except Exception:  # noqa: S110
             pass
         finally:
             self.loop.call_soon_threadsafe(self._on_warmup_done)
@@ -504,22 +535,21 @@ class AnonymizerApp(toga.App):
         self.status_label.text = "Ready"
 
     async def on_run(self, widget) -> None:
-        if self._running or not self._inputs:
-            if not self._inputs:
-                self.status_label.text = "No files selected"
+        if self._running:
             return
-
-        has_pdf = any(p.suffix.lower() == ".pdf" for p in self._inputs)
-        if has_pdf and not _pdf2md_available():
-            await self._handle_missing_pdf_backend()
-
-        if has_pdf and not self._setuptools_ready.is_set():
-            self.status_label.text = "Finishing backend setup…"
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._setuptools_ready.wait
-            )
-
+        if not self._inputs:
+            self.status_label.text = "No files selected"
+            return
+        if any(p.suffix.lower() == ".pdf" for p in self._inputs):
+            await self._ensure_pdf_backend_ready()
         self._begin_run()
+
+    async def _ensure_pdf_backend_ready(self) -> None:
+        if not _pdf2md_available():
+            await self._handle_missing_pdf_backend()
+        if not self._setuptools_ready.is_set():
+            self.status_label.text = "Finishing backend setup…"
+            await asyncio.get_event_loop().run_in_executor(None, self._setuptools_ready.wait)
 
     async def _handle_missing_pdf_backend(self) -> None:
         await self.on_pdf_action(None)
@@ -587,31 +617,30 @@ class AnonymizerApp(toga.App):
 
     async def on_pdf_action(self, widget) -> None:
         from anonymizer_ui import pdf_backend  # noqa: PLC0415
+
         if not pdf_backend.can_install():
-            await self.main_window.dialog(toga.InfoDialog(
-                "Python 3 required",
-                "Installing or updating the PDF backend requires Python 3 "
-                "outside the app bundle.\n\n"
-                "Install it with Homebrew:\n"
-                "    brew install python3\n\n"
-                "Or download from https://python.org",
-            ))
+            await self.main_window.dialog(
+                toga.InfoDialog(
+                    "Python 3 required",
+                    "Installing or updating the PDF backend requires Python 3 "
+                    "outside the app bundle.\n\n"
+                    "Install it with Homebrew:\n"
+                    "    brew install python3\n\n"
+                    "Or download from https://python.org",
+                )
+            )
             return
         installed = pdf_backend.is_installed()
         title = "Update PDF backend" if installed else "Install PDF backend"
-        body = (
-            "This will download pdf-to-markdown from git (needs network).\n\n"
-            + ("Update to the latest revision?" if installed else "Install now?")
+        body = "This will download pdf-to-markdown from git (needs network).\n\n" + (
+            "Update to the latest revision?" if installed else "Install now?"
         )
         if not await self.main_window.dialog(toga.QuestionDialog(title, body)):
             return
-        assert self._pdf_ctrl is not None
+        assert self._pdf_ctrl is not None  # noqa: S101
         await self._pdf_ctrl.run_action(upgrade=installed)
 
     # --- helpers --------------------------------------------------------
-
-    def _append_to_result(self, text: str) -> None:
-        self.result_view.value = (self.result_view.value or "") + text
 
     def _prepend_to_result(self, text: str) -> None:
         self.result_view.value = text + (self.result_view.value or "")
@@ -648,35 +677,16 @@ class AnonymizerApp(toga.App):
     def on_copy(self, widget) -> None:
         out = self._selected_output()
         if out:
-            self._copy_to_clipboard(out.read_text(encoding="utf-8"))
-
-    @staticmethod
-    def _read_clipboard() -> "str | None":
-        try:
-            return appkit_bridge.pasteboard_string()
-        except appkit_bridge.AppKitError:
-            try:
-                result = subprocess.run(["pbpaste"], capture_output=True, text=True)
-                return result.stdout or None
-            except Exception:
-                return None
-
-    @staticmethod
-    def _copy_to_clipboard(text: str) -> None:
-        try:
-            appkit_bridge.pasteboard_set_string(text)
-        except appkit_bridge.AppKitError:
-            subprocess.run(["pbcopy"], input=text.encode("utf-8"))
+            clipboard_ops.write_clipboard(out.read_text(encoding="utf-8"))
 
     def _refresh_table(self) -> None:
         def _status_label(p: Path) -> str:
             s = self._status.get(p, _PENDING)
             return "📂 done" if s == FileStatus.DONE else s
 
-        self.table.data = [
-            (p.name, _status_label(p)) for p in self._inputs
-        ]
+        self.table.data = [(p.name, _status_label(p)) for p in self._inputs]
 
 
 def main() -> AnonymizerApp:
-    return AnonymizerApp("PDF-MD Anonymizer", "ru.ati.anonymizer")
+    version = _resolve_app_version()
+    return AnonymizerApp("PDF-MD Anonymizer", "ru.ati.anonymizer", version=version or None)

@@ -15,13 +15,13 @@ item arrays (used by ``dict_tech_terms`` to keep entries grouped by kind).
 from __future__ import annotations
 
 import json
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 _DICT_DIR = Path(__file__).parent
 
 
-@lru_cache(maxsize=None)
+@cache
 def load(name: str) -> tuple[str, ...]:
     """Return the word list from ``dict_<name>.json`` as a tuple.
 
@@ -31,7 +31,5 @@ def load(name: str) -> tuple[str, ...]:
     """
     data = json.loads((_DICT_DIR / f"dict_{name}.json").read_text("utf-8"))
     if "groups" in data:
-        return tuple(
-            item for group in data["groups"].values() for item in group
-        )
+        return tuple(item for group in data["groups"].values() for item in group)
     return tuple(data["items"])

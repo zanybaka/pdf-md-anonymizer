@@ -9,6 +9,8 @@ ADR-0009 command-dispatch behaviour is preserved.
 
 from __future__ import annotations
 
+import contextlib
+
 from anonymizer_ui import appkit_bridge
 
 # --background CLI flag that is passed when launching at login.
@@ -34,6 +36,7 @@ class MenuBarController:
     def create_status_item(self) -> None:
         """Add the menu-bar status icon and its commands (idempotent)."""
         import toga  # noqa: PLC0415
+
         app = self._app
         try:
             if self._status_icon is None:
@@ -43,10 +46,8 @@ class MenuBarController:
                 self._style_icon()
             if not self._status_commands_added:
                 for _cmd_id in ("about", "request_exit"):
-                    try:
+                    with contextlib.suppress(KeyError):
                         del app.status_icons.commands[_cmd_id]
-                    except KeyError:
-                        pass
                 app.status_icons.commands.add(
                     toga.Command(
                         app._show_main_window,
@@ -105,10 +106,8 @@ class MenuBarController:
             self._app._log(f"remove_status_item failed: {exc}")
         # Clear Toga's stale NSMenuItem cache so StatusIconSet.create() doesn't
         # try to call removeItem_ on items whose NSMenu has already been released.
-        try:
+        with contextlib.suppress(Exception):
             self._app.status_icons._impl._menu_items.clear()
-        except Exception:
-            pass
 
     def hide_window_to_menubar(self) -> None:
         """Hide the main window and switch to Accessory activation policy."""
@@ -178,6 +177,7 @@ class MenuBarController:
         if self._hotkey_monitor is not None:
             return  # already registered
         from anonymizer_ui.app import _load_prefs  # noqa: PLC0415
+
         prefs = _load_prefs()
         if not prefs.get("global_hotkey_enabled", True):
             return
@@ -189,9 +189,7 @@ class MenuBarController:
 
         def _callback() -> None:
             loop.call_soon_threadsafe(
-                lambda: _asyncio.ensure_future(
-                    self._app._anon_selection_to_clipboard()
-                )
+                lambda: _asyncio.ensure_future(self._app._anon_selection_to_clipboard())
             )
 
         try:
@@ -237,13 +235,12 @@ class MenuBarController:
         if self._status_icon is None:
             return
         from anonymizer_ui.app import _load_prefs  # noqa: PLC0415
+
         enabled = _load_prefs().get("launch_at_login", False)
-        try:
+        with contextlib.suppress(appkit_bridge.AppKitError):
             appkit_bridge.set_menu_item_checked(
                 self._status_icon, "Launch at Login", checked=enabled
             )
-        except appkit_bridge.AppKitError:
-            pass
 
     def _reconcile_launch_at_login(self) -> None:
         """Reconcile the stored pref with the actual registration status.
@@ -252,6 +249,7 @@ class MenuBarController:
         removed the login item), update the pref to match reality.
         """
         from anonymizer_ui.app import _load_prefs, _save_prefs  # noqa: PLC0415
+
         prefs = _load_prefs()
         pref_value = prefs.get("launch_at_login", False)
         try:
@@ -267,6 +265,7 @@ class MenuBarController:
     def _cmd_toggle_launch_at_login(self, command=None, **kwargs) -> None:
         """Toggle the 'Launch at Login' login-item registration."""
         from anonymizer_ui.app import _load_prefs, _save_prefs  # noqa: PLC0415
+
         prefs = _load_prefs()
         current = prefs.get("launch_at_login", False)
         new_value = not current
@@ -290,12 +289,10 @@ class MenuBarController:
         # Update the native NSMenuItem checkmark via setState_ so the tick
         # appears/disappears immediately without rebuilding the whole menu.
         if self._status_icon is not None:
-            try:
+            with contextlib.suppress(appkit_bridge.AppKitError):  # best-effort — visual only
                 appkit_bridge.set_menu_item_checked(
                     self._status_icon, "Launch at Login", checked=new_value
                 )
-            except appkit_bridge.AppKitError:
-                pass  # best-effort — visual only
 
     def _apply_stay_lock(self, lock: bool) -> None:
         """Lock or unlock the 'Stay in menu bar' switch for Launch-at-Login.
@@ -308,6 +305,7 @@ class MenuBarController:
         prior (pre-lock) state.
         """
         from anonymizer_ui.app import _load_prefs, _save_prefs  # noqa: PLC0415
+
         app = self._app
         try:
             switch = app.menubar_switch
@@ -319,20 +317,16 @@ class MenuBarController:
             # Save current Stay value before locking.
             prefs["_stay_before_launch_lock"] = switch.value
             _save_prefs(prefs)
-            try:
+            with contextlib.suppress(Exception):
                 switch.value = True
                 switch.enabled = False
-            except Exception:
-                pass
             self._stay_locked = True
         elif not lock and self._stay_locked:
             # Restore prior Stay value.
             prior = prefs.get("_stay_before_launch_lock", True)
-            try:
+            with contextlib.suppress(Exception):
                 switch.value = prior
                 switch.enabled = True
-            except Exception:
-                pass
             prefs.pop("_stay_before_launch_lock", None)
             _save_prefs(prefs)
             self._stay_locked = False

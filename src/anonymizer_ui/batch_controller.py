@@ -121,9 +121,7 @@ class BatchRunController:
         self.status[path] = result.status
         if result.status == FileStatus.DONE:
             self.durations.append(result.duration)
-            self.output_paths[path] = (
-                Path(result.output_path) if result.output_path else None
-            )
+            self.output_paths[path] = Path(result.output_path) if result.output_path else None
         self._on_file_result_cb(result)
         self._on_progress(self.progress_text())
 
@@ -133,8 +131,12 @@ class BatchRunController:
         self._on_done_cb()
 
     def _on_stage_update(self, text: str) -> None:
+        # Keep _stage_text without a trailing newline so progress_text() can
+        # safely embed it into a single-line status label. The log sink, by
+        # contrast, concatenates raw strings, so stage lines must be
+        # newline-terminated to land on their own row (UI-021).
         self._stage_text = text
-        self._on_log(text)
+        self._on_log(text + "\n")
         self._on_progress(self.progress_text())
 
     async def _tick(self) -> None:
@@ -145,9 +147,7 @@ class BatchRunController:
     # --- read-only helpers ----------------------------------------------
 
     def processed(self) -> int:
-        return sum(
-            1 for p in self.inputs if self.status.get(p, _PENDING) != _PENDING
-        )
+        return sum(1 for p in self.inputs if self.status.get(p, _PENDING) != _PENDING)
 
     def progress_text(self) -> str:
         total = len(self.inputs)

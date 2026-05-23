@@ -36,6 +36,19 @@ def test_right_to_left_offsets_stay_valid():
     assert result.text == "X {{INN_1}} Y {{PHONE_1}} Z"
 
 
+def test_dedup_continue_does_not_abort_later_spans():
+    # If `continue` were changed to `break`, the third span would be skipped.
+    text = "a@x.ru and a@x.ru and +7 999 000 00 00"
+    spans = [
+        Span(0, 6, "EMAIL", "a@x.ru"),
+        Span(11, 17, "EMAIL", "a@x.ru"),  # duplicate — hits the continue branch
+        Span(22, 38, "PHONE", "+7 999 000 00 00"),
+    ]
+    result = replace_spans(text, spans)
+    assert "{{EMAIL_1}}" in result.text
+    assert "{{PHONE_1}}" in result.text  # must still be processed after the duplicate
+
+
 def test_preexisting_braces_do_not_collide():
     text = "literal {{EMAIL_1}} and real a@x.ru"
     spans = [Span(29, 35, "EMAIL", "a@x.ru")]

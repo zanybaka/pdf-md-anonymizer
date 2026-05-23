@@ -4,11 +4,7 @@ from anonymizer.detect.structural import is_in_any_range, skill_section_ranges
 
 
 def test_skill_section_ranges_basic():
-    text = (
-        "# Резюме\n\n"
-        "## Ключевые навыки\n\nPython, Java\n\n"
-        "## Образование\n\nуниверситет\n"
-    )
+    text = "# Резюме\n\n## Ключевые навыки\n\nPython, Java\n\n## Образование\n\nуниверситет\n"
     ranges = skill_section_ranges(text)
     assert len(ranges) == 1
     lo, hi = ranges[0]

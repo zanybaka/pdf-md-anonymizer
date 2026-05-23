@@ -67,9 +67,14 @@ def test_trim_drops_empty_span():
 
 def test_stoplist_matches_declined_forms():
     stop = _get_stoplist()
-    for term in ("Российская Федерация", "Российской Федерации", "РФ",
-                 "УТВЕРЖДАЮ", "ООО",
-                 "Общества  с  ограниченной  ответственностью"):
+    for term in (
+        "Российская Федерация",
+        "Российской Федерации",
+        "РФ",
+        "УТВЕРЖДАЮ",
+        "ООО",
+        "Общества  с  ограниченной  ответственностью",
+    ):
         assert _lemma_key(term) in stop
     assert _lemma_key("Газпром") not in stop
 
@@ -94,7 +99,7 @@ def test_allcaps_fio_detected_via_ner():
     persons = [s for s in detect(text, Options()) if s.category == "PERSON"]
     assert persons
     span = persons[0]
-    assert text[span.start:span.end] == span.value
+    assert text[span.start : span.end] == span.value
     assert span.value == "КРУГЛОВ ОЛЕГ АНАТОЛЬЕВИЧ"
 
 
@@ -105,7 +110,7 @@ def test_allcaps_unquoted_org_detected_via_ner():
     values = {s.value for s in orgs}
     assert any("АСТРАЛ-СОФТ" in v for v in values)
     for s in orgs:
-        assert text[s.start:s.end] == s.value
+        assert text[s.start : s.end] == s.value
 
 
 def test_normal_case_ner_unchanged_and_quoted_org_detected():
@@ -114,7 +119,7 @@ def test_normal_case_ner_unchanged_and_quoted_org_detected():
     cats = {s.category for s in spans}
     assert {"PERSON", "LOC"} <= cats
     for s in spans:
-        assert text[s.start:s.end] == s.value
+        assert text[s.start : s.end] == s.value
 
 
 def test_allcaps_ner_round_trip():
@@ -145,14 +150,14 @@ def test_section_header_not_tokenized_as_org():
 
 
 def test_real_fio_still_detected():
-    persons = [s for s in detect("Иван Петров подписал акт.", Options())
-               if s.category == "PERSON"]
+    persons = [s for s in detect("Иван Петров подписал акт.", Options()) if s.category == "PERSON"]
     assert persons and persons[0].value == "Иван Петров"
 
 
 def test_real_org_still_detected_after_ner004():
-    orgs = [s for s in detect("Договор с ООО «Ромашка» подписан.", Options())
-            if s.category == "ORG"]
+    orgs = [
+        s for s in detect("Договор с ООО «Ромашка» подписан.", Options()) if s.category == "ORG"
+    ]
     assert orgs
 
 
@@ -160,8 +165,7 @@ def test_real_org_still_detected_after_ner004():
 
 
 def test_dev_tools_not_tokenized():
-    text = ("Использовал Docker, Jenkins, Redux и Sonarqube, "
-            "а также Gitlab CI ежедневно.")
+    text = "Использовал Docker, Jenkins, Redux и Sonarqube, а также Gitlab CI ежедневно."
     spans = detect(text, Options())
     values = {s.value for s in spans}
     for tool in ("Docker", "Jenkins", "Redux", "Sonarqube", "Gitlab CI"):
@@ -199,7 +203,9 @@ def test_has_propn_ignores_tokens_outside_trimmed_range():
     # Heading "Желательное" at [0,11) is a common noun; a real name sits past
     # a blank line at [13,24) and must not keep the heading-only span alive.
     span.tokens = [
-        _Tok("ADJ", 0, 11), _Tok("PROPN", 13, 19), _Tok("PROPN", 20, 24),
+        _Tok("ADJ", 0, 11),
+        _Tok("PROPN", 13, 19),
+        _Tok("PROPN", 20, 24),
     ]
     assert _has_propn(span, 0, 11) is False
     assert _has_propn(span, 13, 24) is True
@@ -208,10 +214,23 @@ def test_has_propn_ignores_tokens_outside_trimmed_range():
 def test_more_dev_tools_in_tech_stoplist():
     from anonymizer.detect.ner import _TECH_KEYS, _tech_key
 
-    for term in ("Git", "TFS", "WASM", "WebWorkers", "MS Visual Studio",
-                 "Testing Library", "Kotlyn", "Code Review", "Mentoring",
-                 "Monorepos", "Production", "Migration Guides",
-                 "C", "C++", "C#"):
+    for term in (
+        "Git",
+        "TFS",
+        "WASM",
+        "WebWorkers",
+        "MS Visual Studio",
+        "Testing Library",
+        "Kotlyn",
+        "Code Review",
+        "Mentoring",
+        "Monorepos",
+        "Production",
+        "Migration Guides",
+        "C",
+        "C++",
+        "C#",
+    ):
         assert _tech_key(term) in _TECH_KEYS
 
 
@@ -265,16 +284,11 @@ def test_org_in_skill_section_dropped_employer_kept():
     orgs = [s for s in spans if s.category == "ORG"]
     assert any(s.start < skill_start for s in orgs)
     # no ORG/LOC span starts inside the skills section
-    assert not any(
-        s.category in ("ORG", "LOC") and s.start >= skill_start for s in spans
-    )
+    assert not any(s.category in ("ORG", "LOC") and s.start >= skill_start for s in spans)
 
 
 def test_skill_section_suppression_round_trip():
-    text = (
-        "## Опыт работы\n\nКомпания «Рога и Копыта».\n\n"
-        "## Навыки\n\nDocker, React, Redux.\n"
-    )
+    text = "## Опыт работы\n\nКомпания «Рога и Копыта».\n\n## Навыки\n\nDocker, React, Redux.\n"
     res = anonymize(text, Options())
     assert restore(res.text, res.mapping) == text
 
@@ -331,16 +345,14 @@ def test_common_noun_loc_dropped_by_pos_filter():
 
 
 def test_pos_filter_org_loc_can_be_disabled():
-    locs = [s for s in detect(_TRANSCRIPT, Options(ner_pos_filter=False))
-            if s.category == "LOC"]
+    locs = [s for s in detect(_TRANSCRIPT, Options(ner_pos_filter=False)) if s.category == "LOC"]
     assert any(s.value == "Вокруг" for s in locs)
 
 
 def test_real_org_and_city_survive_pos_filter():
     spans = detect("Встреча прошла в Москве с участием Газпром.", Options())
     assert any(s.category == "ORG" and "Газпром" in s.value for s in spans)
-    assert any(s.category == "LOC" and s.value.startswith("Москв")
-               for s in spans)
+    assert any(s.category == "LOC" and s.value.startswith("Москв") for s in spans)
 
 
 def test_ner007_round_trip():

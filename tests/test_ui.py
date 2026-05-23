@@ -85,21 +85,21 @@ def test_pdf_backend_patch_injects_sys_path(tmp_path, monkeypatch):
     assert "sys.path.insert" in lines[1]
     assert str(sp) in lines[1]
     # MPS shim must be absent when not requested
-    assert not any("torch.backends.mps" in l for l in lines)
+    assert not any("torch.backends.mps" in ln for ln in lines)
     # Original entry-point line is still present
-    assert any("from pdf2md import main" in l for l in lines)
+    assert any("from pdf2md import main" in ln for ln in lines)
 
     # Re-patch with shim → second sentinel line added, no accumulation
     pdf_backend._patch_pdf2md_script(tmp_path, with_mps_shim=True)
     lines = script.read_text().splitlines()
-    sentinel_lines = [l for l in lines if l.endswith(pdf_backend._PATCH_SENTINEL)]
+    sentinel_lines = [ln for ln in lines if ln.endswith(pdf_backend._PATCH_SENTINEL)]
     assert len(sentinel_lines) == 2
-    assert any("torch.backends.mps.is_available" in l for l in sentinel_lines)
+    assert any("torch.backends.mps.is_available" in ln for ln in sentinel_lines)
 
     # Toggle back off → shim removed, path patch kept
     pdf_backend._patch_pdf2md_script(tmp_path, with_mps_shim=False)
     lines = script.read_text().splitlines()
-    sentinel_lines = [l for l in lines if l.endswith(pdf_backend._PATCH_SENTINEL)]
+    sentinel_lines = [ln for ln in lines if ln.endswith(pdf_backend._PATCH_SENTINEL)]
     assert len(sentinel_lines) == 1
     assert "sys.path.insert" in sentinel_lines[0]
 
@@ -134,7 +134,8 @@ def test_clean_orphan_keeps_fresh_dir_when_shebang_points_to_lower_version(tmp_p
     fake_python.chmod(0o755)
     (bin_dir / "pdf2md").write_text(f"#!{fake_python}\nimport sys\n")
     monkeypatch.setattr(
-        pdf_backend, "_python_lib_tag",
+        pdf_backend,
+        "_python_lib_tag",
         lambda p: "python3.12" if str(p) == str(fake_python) else None,
     )
 
@@ -176,7 +177,6 @@ def test_minimal_pdf_is_parseable_by_pypdfium2():
 
 def test_subprocess_pip_runner_exit_code_to_error(monkeypatch):
     """SubprocessPipRunner.run raises RuntimeError when pip exits non-zero."""
-    import pytest
     from anonymizer_ui import pdf_backend
 
     class _FakeProc:
@@ -199,12 +199,13 @@ def test_subprocess_pip_runner_exit_code_to_error(monkeypatch):
     runner = pdf_backend.SubprocessPipRunner("/usr/bin/python3")
     with pytest.raises(RuntimeError, match="pip exited with code 2"):
         runner.run(["install", "foo"], on_line=lines.append)
-    assert any("Collecting foo" in l for l in lines)
+    assert any("Collecting foo" in ln for ln in lines)
 
 
 def test_make_runner_uses_sys_executable_in_dev(monkeypatch):
     """Outside a .app bundle, _make_runner binds to sys.executable."""
     import sys
+
     from anonymizer_ui import pdf_backend
 
     monkeypatch.setattr(sys, "executable", "/Users/dev/.venvs/anon/bin/python")
@@ -217,12 +218,11 @@ def test_make_runner_uses_sys_executable_in_dev(monkeypatch):
 def test_make_runner_uses_build_python_in_app(monkeypatch):
     """Inside a .app bundle, _make_runner binds to the located system python."""
     import sys
+
     from anonymizer_ui import pdf_backend
 
-    monkeypatch.setattr(sys, "executable",
-                        "/Applications/Foo.app/Contents/MacOS/Foo")
-    monkeypatch.setattr(pdf_backend, "_find_build_python",
-                        lambda: "/opt/homebrew/bin/python3")
+    monkeypatch.setattr(sys, "executable", "/Applications/Foo.app/Contents/MacOS/Foo")
+    monkeypatch.setattr(pdf_backend, "_find_build_python", lambda: "/opt/homebrew/bin/python3")
     runner = pdf_backend._make_runner()
     assert isinstance(runner, pdf_backend.SubprocessPipRunner)
     assert runner._python == "/opt/homebrew/bin/python3"
@@ -231,11 +231,10 @@ def test_make_runner_uses_build_python_in_app(monkeypatch):
 def test_make_runner_raises_inside_app_without_system_python(monkeypatch):
     """In a .app bundle with no system python, _make_runner raises clearly."""
     import sys
-    import pytest
+
     from anonymizer_ui import pdf_backend
 
-    monkeypatch.setattr(sys, "executable",
-                        "/Applications/Foo.app/Contents/MacOS/Foo")
+    monkeypatch.setattr(sys, "executable", "/Applications/Foo.app/Contents/MacOS/Foo")
     monkeypatch.setattr(pdf_backend, "_find_build_python", lambda: None)
     with pytest.raises(RuntimeError, match="No Python 3 interpreter"):
         pdf_backend._make_runner()
@@ -266,6 +265,7 @@ def test_reveal_copy_disabled_after_clear():
     """reveal/copy buttons are disabled when on_clear is called."""
     import types
     from unittest.mock import MagicMock
+
     from anonymizer_ui.app import AnonymizerApp
 
     reveal = MagicMock()
@@ -285,6 +285,7 @@ def test_reveal_copy_disabled_after_clear():
     obj._refresh_table = lambda: None
 
     import asyncio
+
     asyncio.run(AnonymizerApp.on_clear(obj, None))
 
     assert not reveal.enabled
@@ -297,13 +298,11 @@ def test_reveal_copy_enabled_only_with_valid_selection(tmp_path):
     """on_table_select enables buttons only when selected row has an output file."""
     import types
     from pathlib import Path
+
     from anonymizer_ui.app import AnonymizerApp
 
     out = tmp_path / "doc.anon.md"
     out.write_text("text")
-
-    reveal_enabled = []
-    copy_enabled = []
 
     class _Btn:
         def __init__(self):
@@ -347,6 +346,7 @@ def test_reveal_copy_enabled_only_with_valid_selection(tmp_path):
 def test_drag_drop_overlay_filters_extensions(monkeypatch):
     """setup() passes only .pdf/.md paths to on_paths; other extensions are dropped."""
     from pathlib import Path
+
     from anonymizer_ui import drag_drop_overlay
 
     captured_on_paths = [None]
@@ -396,7 +396,8 @@ def test_drag_drop_overlay_no_callback_when_all_filtered(monkeypatch):
 def test_add_inputs_filters_and_deduplicates(tmp_path):
     """_add_inputs accepts only .pdf/.md and ignores duplicates."""
     import types
-    from anonymizer_ui.app import AnonymizerApp, _PENDING
+
+    from anonymizer_ui.app import _PENDING, AnonymizerApp
 
     obj = types.SimpleNamespace(_inputs=[], _status={})
     obj._refresh_table = lambda: None
@@ -417,8 +418,9 @@ def test_add_inputs_filters_and_deduplicates(tmp_path):
 def test_add_inputs_accepts_string_paths(tmp_path):
     """_add_inputs coerces str arguments to Path."""
     import types
-    from anonymizer_ui.app import AnonymizerApp, _PENDING
     from pathlib import Path
+
+    from anonymizer_ui.app import _PENDING, AnonymizerApp
 
     obj = types.SimpleNamespace(_inputs=[], _status={})
     obj._refresh_table = lambda: None
@@ -433,6 +435,7 @@ def test_add_inputs_accepts_string_paths(tmp_path):
 def test_add_inputs_no_refresh_when_nothing_added(tmp_path):
     """_add_inputs does not call _refresh_table when no new paths are added."""
     import types
+
     from anonymizer_ui.app import AnonymizerApp
 
     refreshed = []
@@ -449,8 +452,8 @@ def test_add_inputs_no_refresh_when_nothing_added(tmp_path):
 
 def test_prefs_roundtrip(tmp_path, monkeypatch):
     """_load_prefs / _save_prefs round-trip through a JSON file."""
-    from anonymizer_ui.app import _load_prefs, _save_prefs
     import anonymizer_ui.app as _app_mod
+    from anonymizer_ui.app import _load_prefs, _save_prefs
 
     monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
     monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
@@ -463,6 +466,7 @@ def test_prefs_roundtrip(tmp_path, monkeypatch):
 def test_on_window_close_prevents_when_switch_on():
     """_on_window_close returns False (prevent) when menubar_switch is on."""
     import types
+
     from anonymizer_ui.app import AnonymizerApp
 
     hidden = []
@@ -481,6 +485,7 @@ def test_on_window_close_prevents_when_switch_on():
 def test_on_window_close_allows_when_switch_off():
     """_on_window_close returns True (allow) when menubar_switch is off."""
     import types
+
     from anonymizer_ui.app import AnonymizerApp
 
     obj = types.SimpleNamespace(
@@ -493,9 +498,9 @@ def test_on_window_close_allows_when_switch_off():
 def test_on_menubar_pref_change_saves_and_removes_item(tmp_path, monkeypatch):
     """Toggling menubar_switch off saves pref and removes status item."""
     import types
+
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui.app import AnonymizerApp
-    from anonymizer_ui.menubar_controller import MenuBarController
 
     monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
     monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
@@ -512,6 +517,7 @@ def test_on_menubar_pref_change_saves_and_removes_item(tmp_path, monkeypatch):
     AnonymizerApp._on_menubar_pref_change(obj, widget)
 
     from anonymizer_ui.app import _load_prefs
+
     assert _load_prefs()["stay_in_menubar"] is False
     assert removed == [1]
 
@@ -522,8 +528,8 @@ def test_on_menubar_pref_change_saves_and_removes_item(tmp_path, monkeypatch):
 def test_map_switch_present_and_default_off():
     """AnonymizerApp exposes map_switch; it defaults to False."""
     import types
+
     import toga
-    from anonymizer_ui.app import AnonymizerApp
 
     switch = toga.Switch("Save replacement map", value=False)
     obj = types.SimpleNamespace(map_switch=switch)
@@ -532,8 +538,10 @@ def test_map_switch_present_and_default_off():
 
 def test_pdf_backend_url_matches_pyproject():
     """The git reference in pdf_backend matches the [pdf] extra in pyproject.toml."""
+    import pathlib
+    import re
+
     from anonymizer_ui import pdf_backend
-    import pathlib, re
 
     pyproject = pathlib.Path(__file__).parent.parent / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
@@ -547,26 +555,25 @@ def test_pdf_backend_url_matches_pyproject():
 # --- UI-008: two status-bar quick actions -----------------------------------
 
 
-def test_anon_clipboard_to_clipboard_anonymizes_text():
-    """_anonymize_in_thread anonymizes text, writes to clipboard, and notifies."""
+def test_anon_clipboard_to_clipboard_anonymizes_text(monkeypatch):
+    """run_anonymize_to_clipboard anonymizes text, writes to clipboard, and notifies."""
     import asyncio
-    import types
-    from anonymizer_ui.app import AnonymizerApp
+
+    from anonymizer_ui import clipboard_ops
 
     written: list[str] = []
     notifs: list[tuple[str, str]] = []
+    monkeypatch.setattr(clipboard_ops, "write_clipboard", lambda t: written.append(t))
+    monkeypatch.setattr(
+        clipboard_ops, "send_notification", lambda title, body: notifs.append((title, body))
+    )
 
     async def _run() -> None:
-        obj = types.SimpleNamespace(
-            loop=asyncio.get_event_loop(),
-            _copy_to_clipboard=lambda t: written.append(t),
-            _send_notification=lambda title, body: notifs.append((title, body)),
-            _begin_busy=lambda: None,
-            _end_busy=lambda: None,
-        )
-        await AnonymizerApp._anonymize_in_thread(
-            obj,
+        await clipboard_ops.run_anonymize_to_clipboard(
             source=lambda: "Контакт: user@example.com",
+            loop=asyncio.get_event_loop(),
+            on_busy_begin=lambda: None,
+            on_busy_end=lambda: None,
             busy_title="Anonymizing…",
             busy_body="Clipboard text",
             done_title="Anonymized to clipboard",
@@ -582,25 +589,25 @@ def test_anon_clipboard_to_clipboard_anonymizes_text():
     assert any("anonymized" in t.lower() for t, _ in notifs)
 
 
-def test_anon_clipboard_to_clipboard_empty_sends_notification():
+def test_anon_clipboard_to_clipboard_empty_sends_notification(monkeypatch):
     """Empty source fires a 'Clipboard is empty' notification without writing anything."""
     import asyncio
-    import types
-    from anonymizer_ui.app import AnonymizerApp
+
+    from anonymizer_ui import clipboard_ops
 
     written: list[str] = []
     notifs: list[tuple[str, str]] = []
+    monkeypatch.setattr(clipboard_ops, "write_clipboard", lambda t: written.append(t))
+    monkeypatch.setattr(
+        clipboard_ops, "send_notification", lambda title, body: notifs.append((title, body))
+    )
 
     async def _run() -> None:
-        obj = types.SimpleNamespace(
-            loop=asyncio.get_event_loop(),
-            _send_notification=lambda title, body: notifs.append((title, body)),
-            _begin_busy=lambda: None,
-            _end_busy=lambda: None,
-        )
-        await AnonymizerApp._anonymize_in_thread(
-            obj,
+        await clipboard_ops.run_anonymize_to_clipboard(
             source=lambda: "",
+            loop=asyncio.get_event_loop(),
+            on_busy_begin=lambda: None,
+            on_busy_end=lambda: None,
             busy_title="Anonymizing…",
             busy_body="Clipboard text",
             done_title="Anonymized to clipboard",
@@ -613,18 +620,18 @@ def test_anon_clipboard_to_clipboard_empty_sends_notification():
     assert any("empty" in " ".join(n).lower() for n in notifs)
 
 
-def test_anonymize_in_thread_notifies_before_slow_source():
+def test_anonymize_in_thread_notifies_before_slow_source(monkeypatch):
     """Regression: notification and busy must fire BEFORE a slow source() runs.
 
     The original bug: source() (PDF conversion, tens of seconds) was called on the
-    UI thread before _send_notification/_begin_busy, so the user clicked
+    UI thread before send_notification/on_busy_begin, so the user clicked
     "Anonymize" and saw nothing for ~a minute before the alert arrived.
     """
     import asyncio
     import threading
     import time
-    import types
-    from anonymizer_ui.app import AnonymizerApp
+
+    from anonymizer_ui import clipboard_ops
 
     events: list[str] = []
     source_started = threading.Event()
@@ -636,18 +643,21 @@ def test_anonymize_in_thread_notifies_before_slow_source():
         events.append("source_end")
         return "Контакт: x@y.com"
 
+    monkeypatch.setattr(clipboard_ops, "write_clipboard", lambda t: None)
+    monkeypatch.setattr(
+        clipboard_ops, "send_notification", lambda title, body: events.append(f"notify:{title}")
+    )
+
     async def _run() -> None:
-        obj = types.SimpleNamespace(
+        await clipboard_ops.run_anonymize_to_clipboard(
+            source=slow_source,
             loop=asyncio.get_event_loop(),
-            _copy_to_clipboard=lambda t: None,
-            _send_notification=lambda title, body: events.append(f"notify:{title}"),
-            _begin_busy=lambda: events.append("begin_busy"),
-            _end_busy=lambda: events.append("end_busy"),
-        )
-        await AnonymizerApp._anonymize_in_thread(
-            obj, source=slow_source,
-            busy_title="Anonymizing…", busy_body="x",
-            done_title="Done", done_body="x",
+            on_busy_begin=lambda: events.append("begin_busy"),
+            on_busy_end=lambda: events.append("end_busy"),
+            busy_title="Anonymizing…",
+            busy_body="x",
+            done_title="Done",
+            done_body="x",
         )
 
     asyncio.run(_run())
@@ -664,6 +674,7 @@ def test_status_bar_has_two_clipboard_commands():
     """create_status_item wires both 'Anonymize File to Clipboard…' and 'Anonymize Clipboard'."""
     import types
     import unittest.mock as mock
+
     from anonymizer_ui.menubar_controller import MenuBarController
 
     commands_added: list[str] = []
@@ -745,11 +756,13 @@ def test_register_global_hotkey_stubbed_nsevent(monkeypatch):
             if name == "NSEvent":
                 return _FakeNSEvent
             return object()
+
         return _ObjCClass
 
-    monkeypatch.setattr(appkit_bridge, "_appkit", _fake_appkit)
-    # Stub Block to be a passthrough so we don't depend on rubicon-objc internals
-    monkeypatch.setattr(appkit_bridge, "Block", lambda func, *a, **kw: func)
+    # Patch the submodule the public function reads from — re-exports on the
+    # __init__ are bound at import time and don't intercept inner references.
+    monkeypatch.setattr(appkit_bridge.global_hotkey, "_appkit", _fake_appkit)
+    monkeypatch.setattr(appkit_bridge.global_hotkey, "Block", lambda func, *a, **kw: func)
 
     token = appkit_bridge.register_global_hotkey(
         appkit_bridge.HOTKEY_DEFAULT_MODIFIER_FLAGS,
@@ -771,13 +784,12 @@ def test_register_global_hotkey_stubbed_nsevent(monkeypatch):
 
 def test_register_global_hotkey_noop_on_nsevent_failure(monkeypatch):
     """register_global_hotkey raises AppKitError when ObjC loading fails."""
-    import pytest
     from anonymizer_ui import appkit_bridge
 
     def _bad_appkit():
         raise RuntimeError("simulated ObjC failure")
 
-    monkeypatch.setattr(appkit_bridge, "_appkit", _bad_appkit)
+    monkeypatch.setattr(appkit_bridge.global_hotkey, "_appkit", _bad_appkit)
     with pytest.raises(appkit_bridge.AppKitError):
         appkit_bridge.register_global_hotkey(0, 0, lambda: None)
 
@@ -792,9 +804,10 @@ def test_remove_global_hotkey_noop_on_none():
 
 def test_menubar_controller_registers_hotkey_on_create(tmp_path, monkeypatch):
     """create_status_item registers the hotkey when global_hotkey_enabled is True (default)."""
+    import asyncio
     import types
     import unittest.mock as mock
-    import asyncio
+
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui.menubar_controller import MenuBarController
 
@@ -813,6 +826,7 @@ def test_menubar_controller_registers_hotkey_on_create(tmp_path, monkeypatch):
         monitors_removed.append(monitor)
 
     from anonymizer_ui import appkit_bridge
+
     monkeypatch.setattr(appkit_bridge, "register_global_hotkey", _fake_register)
     monkeypatch.setattr(appkit_bridge, "remove_global_hotkey", _fake_remove)
     # Suppress permission notification
@@ -851,7 +865,9 @@ def test_menubar_controller_registers_hotkey_on_create(tmp_path, monkeypatch):
     ctrl._status_icon = object()
     ctrl._status_commands_added = True  # skip command wiring
 
-    with mock.patch("toga.Command", side_effect=lambda *a, **kw: types.SimpleNamespace(text=kw.get("text", ""))):
+    with mock.patch(
+        "toga.Command", side_effect=lambda *a, **kw: types.SimpleNamespace(text=kw.get("text", ""))
+    ):
         ctrl.create_status_item()
 
     assert len(monitors_registered) == 1, "hotkey must be registered once"
@@ -869,9 +885,10 @@ def test_menubar_controller_registers_hotkey_on_create(tmp_path, monkeypatch):
 
 def test_menubar_controller_skips_hotkey_when_disabled(tmp_path, monkeypatch):
     """create_status_item skips hotkey registration when global_hotkey_enabled is False."""
+    import asyncio
     import types
     import unittest.mock as mock
-    import asyncio
+
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui.menubar_controller import MenuBarController
 
@@ -883,19 +900,28 @@ def test_menubar_controller_skips_hotkey_when_disabled(tmp_path, monkeypatch):
     monitors_registered: list = []
 
     from anonymizer_ui import appkit_bridge
-    monkeypatch.setattr(appkit_bridge, "register_global_hotkey", lambda *a: monitors_registered.append(1) or object())
+
+    monkeypatch.setattr(
+        appkit_bridge,
+        "register_global_hotkey",
+        lambda *a: monitors_registered.append(1) or object(),
+    )
     monkeypatch.setattr(appkit_bridge, "deliver_notification", lambda *a: None)
 
     class _FakeStatusIcons:
         def __contains__(self, x):
             return True
+
         def add(self, x):
             pass
+
         class _FakeCmds:
             def add(self, *a):
                 pass
+
             def __delitem__(self, k):
                 raise KeyError(k)
+
         commands = _FakeCmds()
 
     fake_app = types.SimpleNamespace(
@@ -913,7 +939,9 @@ def test_menubar_controller_skips_hotkey_when_disabled(tmp_path, monkeypatch):
     ctrl._status_icon = object()
     ctrl._status_commands_added = True
 
-    with mock.patch("toga.Command", side_effect=lambda *a, **kw: types.SimpleNamespace(text=kw.get("text", ""))):
+    with mock.patch(
+        "toga.Command", side_effect=lambda *a, **kw: types.SimpleNamespace(text=kw.get("text", ""))
+    ):
         ctrl.create_status_item()
 
     assert monitors_registered == [], "hotkey must NOT be registered when disabled"
@@ -925,6 +953,7 @@ def test_menubar_controller_skips_hotkey_when_disabled(tmp_path, monkeypatch):
 def test_apply_stay_lock_forces_switch_on_and_disables(tmp_path, monkeypatch):
     """_apply_stay_lock(True) forces menubar_switch ON and disables it."""
     import types
+
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui.menubar_controller import MenuBarController
 
@@ -953,6 +982,7 @@ def test_apply_stay_lock_forces_switch_on_and_disables(tmp_path, monkeypatch):
 def test_apply_stay_lock_restores_prior_state(tmp_path, monkeypatch):
     """_apply_stay_lock(False) restores the prior Stay switch state."""
     import types
+
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui.menubar_controller import MenuBarController
 
@@ -986,9 +1016,10 @@ def test_apply_stay_lock_restores_prior_state(tmp_path, monkeypatch):
 def test_cmd_toggle_launch_at_login_enables(tmp_path, monkeypatch):
     """Toggling Launch at Login ON registers the login item and locks Stay."""
     import types
+
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui import appkit_bridge
-    from anonymizer_ui.menubar_controller import MenuBarController, BACKGROUND_FLAG
+    from anonymizer_ui.menubar_controller import BACKGROUND_FLAG, MenuBarController
 
     monkeypatch.setattr(_app_mod, "_PREFS_FILE", tmp_path / "prefs.json")
     monkeypatch.setattr(_app_mod, "_SUPPORT_DIR", tmp_path)
@@ -996,10 +1027,12 @@ def test_cmd_toggle_launch_at_login_enables(tmp_path, monkeypatch):
     registered_calls: list[list[str]] = []
     unregistered_calls: list = []
 
-    monkeypatch.setattr(appkit_bridge, "register_login_item",
-                        lambda args: registered_calls.append(args))
-    monkeypatch.setattr(appkit_bridge, "unregister_login_item",
-                        lambda: unregistered_calls.append(1))
+    monkeypatch.setattr(
+        appkit_bridge, "register_login_item", lambda args: registered_calls.append(args)
+    )
+    monkeypatch.setattr(
+        appkit_bridge, "unregister_login_item", lambda: unregistered_calls.append(1)
+    )
 
     class _Switch:
         def __init__(self):
@@ -1033,6 +1066,7 @@ def test_cmd_toggle_launch_at_login_enables(tmp_path, monkeypatch):
 def test_cmd_toggle_launch_at_login_disables(tmp_path, monkeypatch):
     """Toggling Launch at Login OFF unregisters the login item and unlocks Stay."""
     import types
+
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui import appkit_bridge
     from anonymizer_ui.menubar_controller import MenuBarController
@@ -1046,10 +1080,12 @@ def test_cmd_toggle_launch_at_login_disables(tmp_path, monkeypatch):
     registered_calls: list = []
     unregistered_calls: list = []
 
-    monkeypatch.setattr(appkit_bridge, "register_login_item",
-                        lambda args: registered_calls.append(args))
-    monkeypatch.setattr(appkit_bridge, "unregister_login_item",
-                        lambda: unregistered_calls.append(1))
+    monkeypatch.setattr(
+        appkit_bridge, "register_login_item", lambda args: registered_calls.append(args)
+    )
+    monkeypatch.setattr(
+        appkit_bridge, "unregister_login_item", lambda: unregistered_calls.append(1)
+    )
 
     class _Switch:
         def __init__(self):
@@ -1082,9 +1118,8 @@ def test_register_login_item_stubbed(monkeypatch):
     """register_login_item calls _register_via_swift on macOS 13+."""
     from anonymizer_ui import appkit_bridge
 
-    swift_calls: list[list[str]] = []
-    monkeypatch.setattr(appkit_bridge, "_macos_version_tuple", lambda: (13, 0))
-    monkeypatch.setattr(appkit_bridge, "_register_via_swift", lambda: None)
+    monkeypatch.setattr(appkit_bridge.login_item, "_macos_version_tuple", lambda: (13, 0))
+    monkeypatch.setattr(appkit_bridge.login_item, "_register_via_swift", lambda: None)
     # Should not raise
     appkit_bridge.register_login_item(["--background"])
 
@@ -1093,8 +1128,10 @@ def test_unregister_login_item_stubbed(monkeypatch):
     """unregister_login_item calls the SMAppService path on macOS 13+."""
     from anonymizer_ui import appkit_bridge
 
-    monkeypatch.setattr(appkit_bridge, "_macos_version_tuple", lambda: (13, 0))
-    monkeypatch.setattr(appkit_bridge, "_unregister_login_item_smappservice", lambda: None)
+    monkeypatch.setattr(appkit_bridge.login_item, "_macos_version_tuple", lambda: (13, 0))
+    monkeypatch.setattr(
+        appkit_bridge.login_item, "_unregister_login_item_smappservice", lambda: None
+    )
     # Should not raise
     appkit_bridge.unregister_login_item()
 
@@ -1102,11 +1139,14 @@ def test_unregister_login_item_stubbed(monkeypatch):
 def test_unregister_login_item_launchagent(tmp_path, monkeypatch):
     """unregister_login_item removes the LaunchAgent plist on macOS < 13."""
     import subprocess
+
     from anonymizer_ui import appkit_bridge
 
-    monkeypatch.setattr(appkit_bridge, "_macos_version_tuple", lambda: (12, 6))
-    monkeypatch.setattr(appkit_bridge, "_launch_agent_plist_path", lambda: tmp_path / "test.plist")
-    monkeypatch.setattr(appkit_bridge, "_launch_agents_dir", lambda: tmp_path)
+    monkeypatch.setattr(appkit_bridge.login_item, "_macos_version_tuple", lambda: (12, 6))
+    monkeypatch.setattr(
+        appkit_bridge.login_item, "_launch_agent_plist_path", lambda: tmp_path / "test.plist"
+    )
+    monkeypatch.setattr(appkit_bridge.login_item, "_launch_agents_dir", lambda: tmp_path)
 
     plist_path = tmp_path / "test.plist"
     plist_path.write_bytes(b"<plist></plist>")
@@ -1121,15 +1161,16 @@ def test_unregister_login_item_launchagent(tmp_path, monkeypatch):
 
 def test_register_login_item_launchagent(tmp_path, monkeypatch):
     """register_login_item writes the LaunchAgent plist on macOS < 13."""
-    import subprocess
     import plistlib
+    import subprocess
+
     from anonymizer_ui import appkit_bridge
 
-    monkeypatch.setattr(appkit_bridge, "_macos_version_tuple", lambda: (12, 6))
+    monkeypatch.setattr(appkit_bridge.login_item, "_macos_version_tuple", lambda: (12, 6))
     plist_path = tmp_path / "test.plist"
-    monkeypatch.setattr(appkit_bridge, "_launch_agent_plist_path", lambda: plist_path)
-    monkeypatch.setattr(appkit_bridge, "_launch_agents_dir", lambda: tmp_path)
-    monkeypatch.setattr(appkit_bridge, "_current_executable", lambda: "/usr/bin/python3")
+    monkeypatch.setattr(appkit_bridge.login_item, "_launch_agent_plist_path", lambda: plist_path)
+    monkeypatch.setattr(appkit_bridge.login_item, "_launch_agents_dir", lambda: tmp_path)
+    monkeypatch.setattr(appkit_bridge.login_item, "_current_executable", lambda: "/usr/bin/python3")
 
     run_calls: list = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: run_calls.append(cmd))
@@ -1147,8 +1188,6 @@ def test_register_login_item_launchagent(tmp_path, monkeypatch):
 def test_background_flag_strips_from_argv(monkeypatch):
     """When --background is in sys.argv it is removed before the app starts."""
     import sys
-    import importlib
-    import types
 
     # Simulate sys.argv with --background
     original_argv = sys.argv[:]
@@ -1168,6 +1207,7 @@ def test_background_flag_strips_from_argv(monkeypatch):
 def test_launch_at_login_persisted_in_prefs(tmp_path, monkeypatch):
     """launch_at_login key is stored in prefs.json when toggled."""
     import types
+
     import anonymizer_ui.app as _app_mod
     from anonymizer_ui import appkit_bridge
     from anonymizer_ui.menubar_controller import MenuBarController
@@ -1209,7 +1249,7 @@ def test_status_bar_has_launch_at_login_command():
     """create_status_item includes 'Launch at Login' in the commands."""
     import types
     import unittest.mock as mock
-    import anonymizer_ui.app as _app_mod
+
     from anonymizer_ui.menubar_controller import MenuBarController
 
     commands_added: list[str] = []
@@ -1260,3 +1300,269 @@ def test_status_bar_has_launch_at_login_command():
     assert "Quit" in commands_added
 
 
+# --- UI-022: window title shows running app version -----------------------
+
+
+def test_window_title_includes_version_from_self_version():
+    """`_window_title` appends ``self.version`` to the formal name."""
+    from anonymizer_ui.app import AnonymizerApp
+
+    fake = type(
+        "FakeApp",
+        (),
+        {
+            "formal_name": "PDF-MD Anonymizer",
+            "version": "9.9.9",
+            "_window_title": AnonymizerApp._window_title,
+        },
+    )()
+    assert fake._window_title() == "PDF-MD Anonymizer 9.9.9"
+
+
+def test_window_title_falls_back_to_importlib_metadata(monkeypatch):
+    """Empty ``self.version`` falls through to ``importlib.metadata.version``."""
+    import importlib.metadata as md
+
+    from anonymizer_ui.app import AnonymizerApp
+
+    monkeypatch.setattr(md, "version", lambda name: "1.2.3")
+    fake = type(
+        "FakeApp",
+        (),
+        {
+            "formal_name": "PDF-MD Anonymizer",
+            "version": "",
+            "_window_title": AnonymizerApp._window_title,
+        },
+    )()
+    assert fake._window_title() == "PDF-MD Anonymizer 1.2.3"
+
+
+def test_window_title_falls_back_to_formal_name_when_version_unavailable(monkeypatch):
+    """All version sources empty → bare formal_name (never crash on partial install)."""
+    from anonymizer_ui import app as app_mod
+    from anonymizer_ui.app import AnonymizerApp
+
+    monkeypatch.setattr(app_mod, "_resolve_app_version", lambda: "")
+    fake = type(
+        "FakeApp",
+        (),
+        {
+            "formal_name": "PDF-MD Anonymizer",
+            "version": None,
+            "_window_title": AnonymizerApp._window_title,
+        },
+    )()
+    assert fake._window_title() == "PDF-MD Anonymizer"
+
+
+def test_resolve_app_version_falls_back_to_nsbundle_when_metadata_missing(monkeypatch):
+    """In a Briefcase .app the package has no dist-info; NSBundle is the source."""
+    import importlib.metadata as md
+
+    from anonymizer_ui import app as app_mod
+
+    def _raise(_name):
+        raise md.PackageNotFoundError("pdf-md-anonymizer")
+
+    monkeypatch.setattr(md, "version", _raise)
+    # NSBundle.mainBundle in the test process is Python's own .app bundle, so
+    # CFBundleShortVersionString resolves to a non-empty value — that's what
+    # the fallback returns when importlib.metadata is unavailable.
+    resolved = app_mod._resolve_app_version()
+    assert resolved, "expected NSBundle fallback to produce a version string"
+
+
+def test_window_title_matches_pyproject_version():
+    """In an installed dev environment the title must match pyproject's version."""
+    import importlib.metadata as md
+
+    from anonymizer_ui.app import AnonymizerApp
+
+    version = md.version("pdf-md-anonymizer")
+    fake = type(
+        "FakeApp",
+        (),
+        {
+            "formal_name": "PDF-MD Anonymizer",
+            "version": version,
+            "_window_title": AnonymizerApp._window_title,
+        },
+    )()
+    assert fake._window_title() == f"PDF-MD Anonymizer {version}"
+    assert version in fake._window_title()
+
+
+# --- UI-023: GitHub header button opens repo URL from package metadata ----
+
+
+def test_repository_url_reads_homepage_from_project_url(monkeypatch):
+    """`_repository_url` returns the URL listed under Project-URL: Homepage."""
+    import importlib.metadata as md
+
+    from anonymizer_ui.app import AnonymizerApp
+
+    class _StubMeta:
+        def get_all(self, key):
+            assert key == "Project-URL"
+            return [
+                "Documentation, https://example.com/docs",
+                "Homepage, https://github.com/zanybaka/pdf-md-anonymizer",
+            ]
+
+        def get(self, key):  # pragma: no cover - fallback path
+            return None
+
+    monkeypatch.setattr(md, "metadata", lambda _name: _StubMeta())
+    assert AnonymizerApp._repository_url() == "https://github.com/zanybaka/pdf-md-anonymizer"
+
+
+def test_repository_url_falls_back_to_home_page_field(monkeypatch):
+    """`_repository_url` falls back to the older ``Home-page`` field."""
+    import importlib.metadata as md
+
+    from anonymizer_ui.app import AnonymizerApp
+
+    class _StubMeta:
+        def get_all(self, key):
+            return None
+
+        def get(self, key):
+            assert key == "Home-page"
+            return "https://github.com/zanybaka/pdf-md-anonymizer"
+
+    monkeypatch.setattr(md, "metadata", lambda _name: _StubMeta())
+    assert AnonymizerApp._repository_url() == "https://github.com/zanybaka/pdf-md-anonymizer"
+
+
+def test_repository_url_falls_back_to_hardcoded_constant_when_all_sources_empty(monkeypatch):
+    """When metadata and Info.plist both fail, the hardcoded fallback wins.
+
+    Bundle .apps have been observed to ship without a refreshed Info.plist
+    (Briefcase only regenerates it on ``create``, not ``build``). Without
+    the hardcoded fallback the GitHub click silently no-ops in that state.
+    """
+    import importlib.metadata as md
+
+    from anonymizer_ui import app as app_mod
+    from anonymizer_ui.app import AnonymizerApp
+
+    def _raise(_name):
+        raise md.PackageNotFoundError("pdf-md-anonymizer")
+
+    monkeypatch.setattr(md, "metadata", _raise)
+    monkeypatch.setattr(app_mod.appkit_bridge, "main_bundle_info_string", lambda _: "")
+    assert AnonymizerApp._repository_url() == app_mod._REPO_URL_FALLBACK
+    assert app_mod._REPO_URL_FALLBACK == "https://github.com/zanybaka/pdf-md-anonymizer"
+
+
+def test_repository_url_falls_back_to_info_plist_in_bundle(monkeypatch):
+    """Inside a Briefcase .app, the URL comes from Info.plist ``ProjectHomepageURL``."""
+    import importlib.metadata as md
+
+    from anonymizer_ui import app as app_mod
+    from anonymizer_ui.app import AnonymizerApp
+
+    expected = "https://github.com/zanybaka/pdf-md-anonymizer"
+
+    def _raise(_name):
+        raise md.PackageNotFoundError("pdf-md-anonymizer")
+
+    monkeypatch.setattr(md, "metadata", _raise)
+    monkeypatch.setattr(
+        app_mod.appkit_bridge,
+        "main_bundle_info_string",
+        lambda key: expected if key == "ProjectHomepageURL" else "",
+    )
+    assert AnonymizerApp._repository_url() == expected
+
+
+def test_on_open_repository_opens_metadata_url_via_nsworkspace(monkeypatch):
+    """The header button handler opens the metadata URL via NSWorkspace."""
+    import asyncio
+
+    from anonymizer_ui import app as app_mod
+    from anonymizer_ui.app import AnonymizerApp
+
+    expected = "https://github.com/zanybaka/pdf-md-anonymizer"
+    opened: list[str] = []
+    monkeypatch.setattr(app_mod.appkit_bridge, "open_url", lambda url: opened.append(url))
+
+    fake = type(
+        "FakeApp",
+        (),
+        {
+            "_on_open_repository": AnonymizerApp._on_open_repository,
+            "_repository_url": staticmethod(lambda: expected),
+            "_log": lambda self, msg: None,
+        },
+    )()
+    asyncio.run(fake._on_open_repository(widget=None))
+    assert opened == [expected]
+
+
+def test_on_open_repository_falls_back_to_webbrowser_on_appkit_error(monkeypatch):
+    """If NSWorkspace fails, the handler falls back to ``webbrowser.open``."""
+    import asyncio
+
+    from anonymizer_ui import app as app_mod
+    from anonymizer_ui.app import AnonymizerApp
+
+    expected = "https://github.com/zanybaka/pdf-md-anonymizer"
+    opened: list[str] = []
+
+    def _raise(_url: str) -> None:
+        raise app_mod.appkit_bridge.AppKitError("simulated NSWorkspace failure")
+
+    monkeypatch.setattr(app_mod.appkit_bridge, "open_url", _raise)
+    monkeypatch.setattr(app_mod.webbrowser, "open", lambda url: opened.append(url))
+
+    fake = type(
+        "FakeApp",
+        (),
+        {
+            "_on_open_repository": AnonymizerApp._on_open_repository,
+            "_repository_url": staticmethod(lambda: expected),
+            "_log": lambda self, msg: None,
+        },
+    )()
+    asyncio.run(fake._on_open_repository(widget=None))
+    assert opened == [expected]
+
+
+def test_on_open_repository_noop_when_metadata_has_no_url(monkeypatch):
+    """No URL → no opener call; UI must not appear broken on partial installs."""
+    import asyncio
+
+    from anonymizer_ui import app as app_mod
+    from anonymizer_ui.app import AnonymizerApp
+
+    opened: list[str] = []
+    monkeypatch.setattr(app_mod.appkit_bridge, "open_url", lambda url: opened.append(url))
+    monkeypatch.setattr(app_mod.webbrowser, "open", lambda url: opened.append(url))
+
+    fake = type(
+        "FakeApp",
+        (),
+        {
+            "_on_open_repository": AnonymizerApp._on_open_repository,
+            "_repository_url": staticmethod(lambda: ""),
+            "_log": lambda self, msg: None,
+        },
+    )()
+    asyncio.run(fake._on_open_repository(widget=None))
+    assert opened == []
+
+
+def test_repository_url_matches_pyproject_in_dev_install():
+    """In an editable dev install the metadata URL must point at the GitHub repo.
+
+    This is the integration glue for the DoD: changing
+    ``[project.urls] Homepage`` in ``pyproject.toml`` and reinstalling
+    redirects the button without any source-code edit.
+    """
+    from anonymizer_ui.app import AnonymizerApp
+
+    url = AnonymizerApp._repository_url()
+    assert url.startswith("https://github.com/")
+    assert "pdf-md-anonymizer" in url

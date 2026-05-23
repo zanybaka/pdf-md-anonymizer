@@ -31,8 +31,7 @@ from typing import Protocol, runtime_checkable
 
 # Same git reference as [project.optional-dependencies].pdf in pyproject.toml.
 _PDF_BACKEND_URL = (
-    "pdf-to-markdown"
-    " @ git+https://github.com/zanybaka/pdf-to-markdown@backend/docling"
+    "pdf-to-markdown @ git+https://github.com/zanybaka/pdf-to-markdown@backend/docling"
 )
 
 _PACKAGE_NAME = "pdf-to-markdown"
@@ -40,13 +39,7 @@ _PACKAGE_NAME = "pdf-to-markdown"
 
 def backend_dir() -> Path:
     """Return the user-writable install prefix for the first-use PDF backend."""
-    return (
-        Path.home()
-        / "Library"
-        / "Application Support"
-        / "pdf-md-anonymizer"
-        / "pdf-backend"
-    )
+    return Path.home() / "Library" / "Application Support" / "pdf-md-anonymizer" / "pdf-backend"
 
 
 def pdf2md_path() -> Path:
@@ -133,9 +126,9 @@ def _find_build_python() -> str | None:
 
     candidates = [
         shutil.which("python3"),
-        "/opt/homebrew/bin/python3",   # Apple-Silicon Homebrew
-        "/usr/local/bin/python3",      # Intel Homebrew / manual install
-        "/usr/bin/python3",            # macOS system Python (Xcode CLT) — often 3.9
+        "/opt/homebrew/bin/python3",  # Apple-Silicon Homebrew
+        "/usr/local/bin/python3",  # Intel Homebrew / manual install
+        "/usr/bin/python3",  # macOS system Python (Xcode CLT) — often 3.9
     ]
     for candidate in candidates:
         if candidate and Path(candidate).is_file() and _python_version_ok(candidate):
@@ -146,10 +139,10 @@ def _find_build_python() -> str | None:
 def _python_version_ok(python: str) -> bool:
     """Return True if *python* reports a version >= ``_MIN_PYTHON``."""
     import subprocess
+
     try:
-        out = subprocess.check_output(
-            [python, "-c",
-             f"import sys; exit(0 if sys.version_info >= {_MIN_PYTHON!r} else 1)"],
+        subprocess.check_output(
+            [python, "-c", f"import sys; exit(0 if sys.version_info >= {_MIN_PYTHON!r} else 1)"],
             timeout=5,
         )
         return True
@@ -164,6 +157,7 @@ def resolve_cert() -> Path | None:
         return system_cert
     try:
         import certifi  # noqa: PLC0415
+
         return Path(certifi.where())
     except ImportError:
         return None
@@ -178,11 +172,10 @@ def _ssl_cert_args() -> list[str]:
 # PipRunner protocol and implementation
 # ---------------------------------------------------------------------------
 
+
 @runtime_checkable
 class PipRunner(Protocol):
-    def run(
-        self, args: list[str], on_line: Callable[[str], None] | None
-    ) -> None: ...
+    def run(self, args: list[str], on_line: Callable[[str], None] | None) -> None: ...
 
 
 class SubprocessPipRunner:
@@ -198,9 +191,7 @@ class SubprocessPipRunner:
     def __init__(self, python_path: str) -> None:
         self._python = python_path
 
-    def run(
-        self, args: list[str], on_line: Callable[[str], None] | None = None
-    ) -> None:
+    def run(self, args: list[str], on_line: Callable[[str], None] | None = None) -> None:
         import subprocess  # noqa: PLC0415
 
         cmd = [self._python, "-m", "pip"] + args + _ssl_cert_args()
@@ -239,33 +230,39 @@ def _make_runner() -> SubprocessPipRunner:
 # Backend-specific install / update helpers
 # ---------------------------------------------------------------------------
 
-def install_backend(
-    runner: PipRunner, on_line: Callable[[str], None] | None = None
-) -> None:
+
+def install_backend(runner: PipRunner, on_line: Callable[[str], None] | None = None) -> None:
     """Install the pdf-to-markdown backend using *runner*."""
     prefix = backend_dir()
     prefix.mkdir(parents=True, exist_ok=True)
     if on_line:
         on_line(f"Installing {_PACKAGE_NAME} (this may take a few minutes)…")
     pip_args = [
-        "install", "--prefix", str(prefix), "--no-cache-dir",
-        "setuptools", _PDF_BACKEND_URL,
+        "install",
+        "--prefix",
+        str(prefix),
+        "--no-cache-dir",
+        "setuptools",
+        _PDF_BACKEND_URL,
     ]
     runner.run(pip_args, on_line)
     _finalize_install(prefix, on_line)
 
 
-def update_backend(
-    runner: PipRunner, on_line: Callable[[str], None] | None = None
-) -> None:
+def update_backend(runner: PipRunner, on_line: Callable[[str], None] | None = None) -> None:
     """Update the pdf-to-markdown backend using *runner*."""
     prefix = backend_dir()
     prefix.mkdir(parents=True, exist_ok=True)
     if on_line:
         on_line(f"Updating {_PACKAGE_NAME} (this may take a few minutes)…")
     pip_args = [
-        "install", "--prefix", str(prefix), "--no-cache-dir", "--upgrade",
-        "setuptools", _PDF_BACKEND_URL,
+        "install",
+        "--prefix",
+        str(prefix),
+        "--no-cache-dir",
+        "--upgrade",
+        "setuptools",
+        _PDF_BACKEND_URL,
     ]
     runner.run(pip_args, on_line)
     _finalize_install(prefix, on_line)
@@ -303,6 +300,7 @@ def _finalize_install(prefix: Path, on_line: Callable[[str], None] | None) -> No
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def install(on_line: Callable[[str], None] | None = None) -> None:
     """Install the pdf-to-markdown backend from git."""
     install_backend(_make_runner(), on_line)
@@ -311,6 +309,35 @@ def install(on_line: Callable[[str], None] | None = None) -> None:
 def update(on_line: Callable[[str], None] | None = None) -> None:
     """Update the PDF backend to the latest revision from git."""
     update_backend(_make_runner(), on_line)
+
+
+# ---------------------------------------------------------------------------
+# Site-packages resolution (kept here so test monkeypatches of
+# ``pdf_backend._python_lib_tag`` keep intercepting inner calls).
+# ---------------------------------------------------------------------------
+
+
+def _resolve_via_shebang(prefix: Path, lib: Path) -> Path | None:
+    """Resolve site-packages from ``bin/pdf2md``'s shebang Python.
+
+    Returns ``None`` when the script, its shebang, the Python it points to,
+    or the resulting ``lib/pythonX.Y/site-packages`` directory is absent —
+    in which case the caller falls back to a directory-listing heuristic.
+    """
+    script = prefix / "bin" / "pdf2md"
+    if not script.is_file():
+        return None
+    try:
+        first_line = script.read_text(encoding="utf-8").splitlines()[0]
+    except OSError:
+        return None
+    if not first_line.startswith("#!"):
+        return None
+    tag = _python_lib_tag(first_line[2:].strip())
+    if tag is None:
+        return None
+    sp = lib / tag / "site-packages"
+    return sp if sp.is_dir() else None
 
 
 def _find_site_packages(prefix: Path) -> Path | None:
@@ -331,19 +358,9 @@ def _find_site_packages(prefix: Path) -> Path | None:
     lib = prefix / "lib"
     if not lib.is_dir():
         return None
-    script = prefix / "bin" / "pdf2md"
-    if script.is_file():
-        try:
-            first_line = script.read_text(encoding="utf-8").splitlines()[0]
-        except OSError:
-            first_line = ""
-        if first_line.startswith("#!"):
-            shebang_py = first_line[2:].strip()
-            tag = _python_lib_tag(shebang_py)
-            if tag is not None:
-                sp = lib / tag / "site-packages"
-                if sp.is_dir():
-                    return sp
+    resolved = _resolve_via_shebang(prefix, lib)
+    if resolved is not None:
+        return resolved
     candidates = [
         child / "site-packages"
         for child in sorted(lib.iterdir(), reverse=True)
@@ -360,10 +377,14 @@ def _python_lib_tag(python_path: str) -> str | None:
     if not python_path or not Path(python_path).is_file():
         return None
     import subprocess  # noqa: PLC0415
+
     try:
         out = subprocess.check_output(
-            [python_path, "-c",
-             "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')"],
+            [
+                python_path,
+                "-c",
+                "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')",
+            ],
             timeout=5,
             text=True,
         ).strip()
@@ -372,51 +393,7 @@ def _python_lib_tag(python_path: str) -> str | None:
     return out or None
 
 
-_PATCH_SENTINEL = "  # _pdf_md_anon"
-
-
-def _patch_pdf2md_script(prefix: Path, *, with_mps_shim: bool) -> None:
-    """Rewrite ``pdf2md``'s injected prelude.
-
-    Always injects a ``sys.path.insert`` so the shebang Python finds the
-    packages laid down by ``pip install --prefix``.  When *with_mps_shim* is
-    ``True`` also monkey-patches ``torch.backends.mps.is_available`` to
-    ``False`` — needed on Apple Silicon when the installed docling+torch
-    combination hits the MPS float64 limitation in the layout model.
-
-    Idempotent: all previously injected lines (identified by ``_PATCH_SENTINEL``,
-    plus the older non-sentinel ``sys.path.insert`` form) are stripped before
-    new ones are written, so re-running after an update does not accumulate
-    stale lines and the MPS shim can be toggled off on next run.
-    """
-    script = prefix / "bin" / "pdf2md"
-    if not script.is_file():
-        return
-    sp = _find_site_packages(prefix)
-    if sp is None:
-        return
-    content = script.read_text(encoding="utf-8")
-    lines = content.splitlines(keepends=True)
-    lines = [
-        ln for ln in lines
-        if not ln.rstrip("\n").endswith(_PATCH_SENTINEL)
-        and not ln.startswith("import sys; sys.path.insert(0, ")
-    ]
-    insert_pos = 1 if lines and lines[0].startswith("#!") else 0
-    patch_lines = [
-        f"import sys; sys.path.insert(0, {str(sp)!r}){_PATCH_SENTINEL}\n",
-    ]
-    if with_mps_shim:
-        patch_lines.append(
-            f"import torch; torch.backends.mps.is_available = lambda: False{_PATCH_SENTINEL}\n"
-        )
-    patched = "".join(lines[:insert_pos] + patch_lines + lines[insert_pos:])
-    script.write_text(patched, encoding="utf-8")
-
-
-def _clean_orphan_python_dirs(
-    prefix: Path, on_line: Callable[[str], None] | None
-) -> None:
+def _clean_orphan_python_dirs(prefix: Path, on_line: Callable[[str], None] | None) -> None:
     """Delete ``lib/pythonX.Y/`` subtrees that do not hold ``pdf_to_markdown``.
 
     ``pip install --prefix`` lays packages under ``lib/pythonX.Y/site-packages``
@@ -440,69 +417,10 @@ def _clean_orphan_python_dirs(
             shutil.rmtree(child, ignore_errors=True)
 
 
-def _minimal_pdf() -> bytes:
-    """Build a tiny well-formed single-page PDF in pure bytes.
+# ---------------------------------------------------------------------------
+# Re-exports from focused submodules (split out for file-size reasons; the
+# names stay accessible as ``pdf_backend.X`` so callers and tests are unaffected).
+# ---------------------------------------------------------------------------
 
-    Used only for the post-install smoke test, so generating it deterministically
-    in code keeps the repo free of binary fixtures and the byte offsets honest
-    no matter what Python writes the bytes.
-    """
-    body_objects = [
-        b"<</Type/Catalog/Pages 2 0 R>>",
-        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
-        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
-        b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
-        b"<</Length 44>>\nstream\n"
-        b"BT /F1 12 Tf 100 700 Td (Hello World) Tj ET\nendstream",
-        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
-    ]
-    out = b"%PDF-1.4\n"
-    offsets = []
-    for i, obj in enumerate(body_objects, start=1):
-        offsets.append(len(out))
-        out += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
-    xref_offset = len(out)
-    n = len(body_objects) + 1
-    out += b"xref\n" + f"0 {n}\n".encode() + b"0000000000 65535 f \n"
-    for off in offsets:
-        out += f"{off:010d} 00000 n \n".encode()
-    out += b"trailer\n" + f"<</Size {n}/Root 1 0 R>>\n".encode()
-    out += b"startxref\n" + f"{xref_offset}\n".encode() + b"%%EOF\n"
-    return out
-
-
-def _smoke_test(prefix: Path) -> tuple[bool, str]:
-    """Run ``pdf2md`` on a tiny embedded PDF; return ``(ok, reason)``.
-
-    A 120-second timeout is generous enough for model load on first use yet
-    short enough that a hung subprocess does not freeze the Update flow.
-    The reason string is included in the result for surfacing to the user
-    (e.g. ``"MPS float64"`` vs ``"timeout"`` vs ``"exit 1"``).
-    """
-    import subprocess  # noqa: PLC0415
-    import tempfile  # noqa: PLC0415
-
-    script = prefix / "bin" / "pdf2md"
-    if not script.is_file():
-        return False, "pdf2md script missing"
-    pdf_path = Path(tempfile.mkstemp(suffix=".pdf")[1])
-    try:
-        pdf_path.write_bytes(_minimal_pdf())
-        try:
-            proc = subprocess.run(
-                [str(script), str(pdf_path)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired:
-            return False, "timeout"
-        except OSError as exc:
-            return False, f"spawn failed: {exc}"
-        if proc.returncode == 0:
-            return True, "ok"
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:] or [""]
-        reason = "MPS float64" if "float64" in tail[0] and "MPS" in tail[0] else f"exit {proc.returncode}"
-        return False, reason
-    finally:
-        pdf_path.unlink(missing_ok=True)
+from ._script_patch import _PATCH_SENTINEL, _patch_pdf2md_script  # noqa: E402, F401
+from ._smoke import _minimal_pdf, _smoke_test  # noqa: E402, F401

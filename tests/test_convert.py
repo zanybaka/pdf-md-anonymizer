@@ -43,6 +43,7 @@ def test_default_command_prefers_env_local(monkeypatch, tmp_path):
 def test_default_command_falls_back_to_path(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.prefix", str(tmp_path))
     import anonymizer.convert as _conv
+
     monkeypatch.setattr(_conv, "_user_backend_pdf2md", lambda: tmp_path / "bin" / "pdf2md")
     assert default_pdf2md_command() == "pdf2md"
 
@@ -55,6 +56,7 @@ def test_default_command_finds_user_backend(monkeypatch, tmp_path):
     pdf2md_exe = backend_bin / "pdf2md"
     pdf2md_exe.write_text("#!/bin/sh\n", encoding="utf-8")
     from anonymizer import convert
+
     monkeypatch.setattr(convert, "_user_backend_pdf2md", lambda: pdf2md_exe)
     assert default_pdf2md_command() == str(pdf2md_exe)
 
@@ -68,6 +70,7 @@ def test_default_command_env_local_beats_user_backend(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.prefix", str(tmp_path))
     backend_exe = tmp_path / "backend" / "bin" / "pdf2md"
     from anonymizer import convert
+
     monkeypatch.setattr(convert, "_user_backend_pdf2md", lambda: backend_exe)
     assert default_pdf2md_command() == str(env_exe)
 

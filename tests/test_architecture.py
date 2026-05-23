@@ -46,13 +46,11 @@ def test_core_does_not_import_toga():
 
 
 def test_objcclass_only_in_appkit_bridge():
-    """ObjCClass(...) calls must be confined to appkit_bridge.py (UI-009)."""
+    """ObjCClass(...) calls must be confined to the appkit_bridge package (UI-009)."""
     ui_files = _files_matching("*.py", Path("src/anonymizer_ui"))
-    non_bridge = [p for p in ui_files if p.name != "appkit_bridge.py"]
+    non_bridge = [p for p in ui_files if "appkit_bridge" not in p.parts]
     count = _grep_count(r"ObjCClass\(", in_paths=non_bridge)
-    assert count == 0, (
-        f"Found {count} ObjCClass(...) call(s) outside appkit_bridge.py"
-    )
+    assert count == 0, f"Found {count} ObjCClass(...) call(s) outside the appkit_bridge package"
 
 
 # ---------------------------------------------------------------------------
@@ -60,9 +58,30 @@ def test_objcclass_only_in_appkit_bridge():
 # ---------------------------------------------------------------------------
 
 _CATEGORY_NAMES = [
-    "EMAIL", "PHONE", "INN", "SNILS", "OGRN", "OGRNIP", "KPP", "BIK",
-    "ACCOUNT", "CARD", "DOB", "POSTAL_CODE", "ADDRESS", "PASSPORT",
-    "IP", "URL", "SECRET", "ORG", "PERSON", "LOC", "NICKNAME",
+    "EMAIL",
+    "PHONE",
+    "INN",
+    "SNILS",
+    "OGRN",
+    "OGRNIP",
+    "KPP",
+    "BIK",
+    "ACCOUNT",
+    "CARD",
+    "DOB",
+    "POSTAL_CODE",
+    "ADDRESS",
+    "PASSPORT",
+    "IP",
+    "URL",
+    "SECRET",
+    "ORG",
+    "PERSON",
+    "LOC",
+    "NICKNAME",
+    "BIOMETRIC",
+    "MEDICAL",
+    "OCCUPATION",
 ]
 
 # Files that must NOT contain bare category string literals (the enum module
@@ -85,10 +104,17 @@ def test_category_strings_only_in_categories_module():
     # (followed by a colon) — the _TYPE_TO_CATEGORY keys {"PER", "ORG", "LOC"}
     # are Natasha internal type codes and must not be flagged.
     alternation = "|".join(_CATEGORY_NAMES)
-    # Negative lookahead for ": " or ":" catches dict-key positions.
-    # Negative lookbehind for "Rule(" excludes Rule.name strings (DETECT-003).
-    pattern = rf"""(?<!Rule\()(?:"|')(?:{alternation})(?:"|')(?!\s*:)"""
-    count = _grep_count(pattern, in_paths=_CATEGORY_LITERAL_FORBIDDEN)
+    # Negative lookahead for ": " catches dict-key positions.
+    # To handle both single-line Rule("NAME", ...) and ruff-format-expanded multiline
+    # Rule(\n    "NAME", ...) forms, strip Rule() first-arg strings from the text before
+    # scanning — they are rule identifiers, not category value literals (DETECT-003).
+    rule_name_rx = re.compile(rf"""Rule\(\s*(?:"|')(?:{alternation})(?:"|')""", re.DOTALL)
+    pattern = re.compile(rf"""(?:"|')(?:{alternation})(?:"|')(?!\s*:)""")
+    count = 0
+    for path in _CATEGORY_LITERAL_FORBIDDEN:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        text = rule_name_rx.sub("Rule(__", text)
+        count += len(pattern.findall(text))
     assert count == 0, (
         f"Found {count} bare category string literal(s) in the detection modules. "
         "Use Category.<NAME> instead."
