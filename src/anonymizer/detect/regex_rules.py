@@ -556,6 +556,26 @@ RULES: list[Rule] = [
         ),
         group=1,
     ),
+    # DOB in "age (date)" résumé format, e.g. "26 лет (17.11.1999)" or the
+    # English-locale HH.ru export "26 years (November 17, 1999)".
+    # The age+parenthesis phrase is the precision anchor — a bare date is not matched.
+    Rule(
+        "DOB_AGE_PARENS",
+        Category.DOB,
+        re.compile(
+            r"\d+\s+(?:лет|года|год|years?)\s*\(\s*"
+            r"(\d{2}[./]\d{2}[./]\d{4}"
+            r"|\d{4}-\d{2}-\d{2}"
+            r"|\d{1,2}\s+[а-яё]+\s+\d{4}"
+            r"|(?:January|February|March|April|May|June|July|August"
+            r"|September|October|November|December)\s+\d{1,2},?\s+\d{4}"
+            r"|\d{1,2}\s+(?:January|February|March|April|May|June|July|August"
+            r"|September|October|November|December)\s+\d{4}"
+            r")",
+            re.IGNORECASE,
+        ),
+        group=1,
+    ),
     Rule(
         "IP_V4",
         Category.IP,

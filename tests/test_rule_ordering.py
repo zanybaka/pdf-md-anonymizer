@@ -35,6 +35,7 @@ def test_rule_ordering_snapshot():
         "PASSPORT_BARE",
         "POSTAL_CODE",
         "DOB",
+        "DOB_AGE_PARENS",
         "IP_V4",
         "IP_V6",
         "PERSON",

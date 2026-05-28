@@ -268,6 +268,24 @@ def test_dob_textual_month_and_rodilsya_anchor():
     assert [s for s in detect(fem) if s.category == "DOB"]
 
 
+def test_dob_age_parens_format():
+    # English-locale HH.ru export: "26 years (November 17, 1999)"
+    text = "26 years (November 17, 1999), Мужской gender"
+    dob = [s for s in detect(text) if s.category == "DOB"]
+    assert dob and dob[0].value == "November 17, 1999"
+    # Russian age with Russian month name
+    text_ru = "26 лет (17 ноября 1999), Мужской"
+    dob_ru = [s for s in detect(text_ru) if s.category == "DOB"]
+    assert dob_ru and dob_ru[0].value == "17 ноября 1999"
+    # Russian age with numeric date
+    text_num = "26 лет (17.11.1999), Мужской"
+    dob_num = [s for s in detect(text_num) if s.category == "DOB"]
+    assert dob_num and dob_num[0].value == "17.11.1999"
+    # Bare date without age anchor must NOT match
+    bare = "November 17, 1999"
+    assert not [s for s in detect(bare) if s.category == "DOB"]
+
+
 def test_url_www_host_and_bare_domain():
     bare = [s.value for s in detect("сайт компании unicum.ru сейчас") if s.category == "URL"]
     assert bare == ["unicum.ru"]
