@@ -558,20 +558,21 @@ RULES: list[Rule] = [
     ),
     # DOB in "age (date)" résumé format, e.g. "26 лет (17.11.1999)" or the
     # English-locale HH.ru export "26 years (November 17, 1999)".
-    # The age+parenthesis phrase is the precision anchor — a bare date is not matched.
+    # The entire "N years (date)" construct — including the age number — is
+    # captured as one span so the age itself does not leak after redaction.
     Rule(
         "DOB_AGE_PARENS",
         Category.DOB,
         re.compile(
-            r"\d+\s+(?:лет|года|год|years?)\s*\(\s*"
-            r"(\d{2}[./]\d{2}[./]\d{4}"
+            r"(\d+\s+(?:лет|года|год|years?)\s*\(\s*"
+            r"(?:\d{2}[./]\d{2}[./]\d{4}"
             r"|\d{4}-\d{2}-\d{2}"
             r"|\d{1,2}\s+[а-яё]+\s+\d{4}"
             r"|(?:January|February|March|April|May|June|July|August"
             r"|September|October|November|December)\s+\d{1,2},?\s+\d{4}"
             r"|\d{1,2}\s+(?:January|February|March|April|May|June|July|August"
             r"|September|October|November|December)\s+\d{4}"
-            r")",
+            r")\s*\))",
             re.IGNORECASE,
         ),
         group=1,
