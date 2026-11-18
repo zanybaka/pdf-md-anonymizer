@@ -240,6 +240,7 @@ All notable changes to this project are documented here.
   the installed package version.
 
 ### Fixed
+- **DOC-002** Tell Codex to read the shared AGENTS.md before applying project-specific rules.
 - **UI-021** Stage-progress log lines in the result view no longer concatenate
   onto a single row. `BatchRunController._on_stage_update` now appends `\n`
   when forwarding stage text to the `on_log` callback, matching the existing

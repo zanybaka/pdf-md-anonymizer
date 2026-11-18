@@ -182,6 +182,19 @@
 
 ## Phase 6: Maintainability and documentation
 
+- [x] DOC-002 Load shared agent rules when a project override exists
+Progress: 2026-11-18 DONE. Added the shared-canon instruction as the first line of AGENTS.override.md; the connected-project rules check passes.
+Task Context
+Codex loads AGENTS.override.md instead of AGENTS.md in the same directory. The override lacked the instruction to read the shared rules, so agents could miss those rules.
+Task DOD
+AGENTS.override.md opens with the exact first-line instruction required by AGENTS.md. The remaining project rules are preserved. Verify the first line and run git diff --check. No application code changes. ADR not required because this repairs instruction loading without changing the application architecture.
+Priority: P2
+Size: S
+Depends on:
+Agent: human
+Docs: AGENTS.override.md, CHANGELOG.md
+Verify: manual
+
 - [x] DICT-001 Externalize exclusion dictionaries and stoplists into data files
   Every hand-curated word list currently lives inline in a detection module: `regex_rules._ORG_FORMS`, `_ORG_ABBR`, `_URL_TLD`, and in `detect/ner.py` the `_SECTION_HEADERS`, `_FIELD_LABELS`, `_TECH_TERMS`, `_SKILL_SECTION_STEMS` lists plus the composed `_STOPLIST_TERMS`. As these lists grow (the NER-006 ADR notes the stoplists are an open-ended precision backstop), editing them means touching detection logic. Move every exclusion dictionary and stoplist into a dedicated `src/anonymizer/detect/dictionaries/` package — one file per list, each a plain data module (or a `.txt`/`.json` resource loaded once at import) with a top-of-file comment stating the list's purpose and how to extend it. Detection code imports the data; this is a pure refactor with no behaviour change. Regex *patterns* and structural fragments (`_PATRONYMIC`, `_IPV6`, rule regexes) stay in code — only curated word lists move. Keep composition logic (e.g. `_STOPLIST_TERMS` aggregating country names + grifs + month names + section headers + legal forms) in code, sourcing each group from its file.
   **`_MONTH_NAMES` stays inline** — it is a fixed, universal list (the twelve Russian months), not an open-ended exclusion dictionary that gets extended, so it does not belong in `dictionaries/`.

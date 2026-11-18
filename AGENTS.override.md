@@ -1,3 +1,5 @@
+Read AGENTS.md at the repository root first: it is the shared canon, and this file only adds the rules of this repository and wins on conflict.
+
 # Project-specific agent rules (pdf-md-anonymizer)
 
 Overrides and additions to the shared AGENTS.md for this repository only.
